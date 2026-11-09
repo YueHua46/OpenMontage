@@ -21,10 +21,20 @@ sys.path.insert(0, str(Path.cwd()))
 from tools.cost_tracker import CostTracker  # noqa: E402
 from tools.tool_registry import registry  # noqa: E402
 
-IMAGE_TOOL = "relay_tststs_gpt_image_2"
-VIDEO_TOOL = "relay_omniakey_minimax_h3"
+# Fallbacks only; the live defaults come from routing.default_tools in the relay config,
+# so switching models (python -m tools.relay route ...) needs no script change.
+FALLBACK_IMAGE_TOOL = "relay_tststs_gpt_image_2_6"
+FALLBACK_VIDEO_TOOL = "relay_omniakey_minimax_h3"
 RATES = {"768P": 0.0269, "2K": 0.0431}
-IMAGE_RATE = 0.08
+
+
+def default_tool(kind, fallback):
+    try:
+        from tools.relay.config import try_load_relay_config
+
+        return try_load_relay_config().routing.default_tools.get(kind) or fallback
+    except Exception:
+        return fallback
 
 
 def size_of(path):
@@ -41,8 +51,8 @@ def main():
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--resubmit", action="store_true", help="new paid attempt; only after user approval")
-    ap.add_argument("--image-tool", default=IMAGE_TOOL)
-    ap.add_argument("--video-tool", default=VIDEO_TOOL)
+    ap.add_argument("--image-tool", default=default_tool("image", FALLBACK_IMAGE_TOOL))
+    ap.add_argument("--video-tool", default=default_tool("video", FALLBACK_VIDEO_TOOL))
     ap.add_argument("--workers", type=int)
     args = ap.parse_args()
 
@@ -71,7 +81,11 @@ def main():
                       "output_path": str(out), "scene_id": sid, "prompt": s["frame_prompt"]}
             if refs:
                 inputs["image_paths"] = refs
-            cost = IMAGE_RATE
+            registry.ensure_discovered()
+            image_tool = registry.get(args.image_tool)
+            if image_tool is None:
+                sys.exit(f"image tool {args.image_tool} is not registered; run python -m tools.relay list")
+            cost = image_tool.estimate_cost(inputs)  # price from the relay config
         else:
             out = videos / f"{sid}.mp4"
             frame = images / f"{sid}.png"

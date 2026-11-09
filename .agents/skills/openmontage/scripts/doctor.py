@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 
 REQUIRED_KEYS = {
-    "TSTSTS_MEDIA_API_KEY": "images (gpt-image-2)",
+    "TSTSTS_MEDIA_API_KEY": "images (gpt-image-2.6)",
     "OMNIAKEY_API_KEY": "video (MiniMax H3)",
     "FISH_AUDIO_API_KEY": "voiceover (Fish Audio)",
 }

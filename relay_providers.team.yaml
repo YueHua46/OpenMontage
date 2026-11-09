@@ -12,14 +12,15 @@
 # （gpt-image-2 文生图/图生图、grok-imagine-video-1.5 本地首帧图生视频）。
 # 协议参照 clipforge 已验证的实现（openai.ts 的 Images 协议、xai.ts 的 Grok 视频协议）。
 #
-# ⚠ pricing 是保守估算值（中转站未公开价格），仅用于预算闸门；请按实际账单修改。
+# 生图默认 gpt-image-2.6；tststs 价格按 2026-11-09 中转站价格页（图片 ¥0.006–0.01/张，grok 视频 720p ¥0.09/s）。
+# ⚠ 其他未注明的 pricing 仍为估算，仅用于预算闸门；请按实际账单修改。
 # ⚠ live: true 表示允许真实计费请求。
 
 version: 1
 routing:
   paid_provider_policy: relay_only
   default_tools:
-    image: relay_tststs_gpt_image_2
+    image: relay_tststs_gpt_image_2_6
     video: relay_omniakey_minimax_h3
 relays:
   tststs:
@@ -44,7 +45,8 @@ relays:
       defaults:
         size: 864x1536
       pricing:
-        per_image: 0.08
+        currency: CNY
+        per_image: 0.01
       submit_timeout_seconds: 240
       best_for:
       - 文字渲染
@@ -67,8 +69,34 @@ relays:
       defaults:
         size: 864x1536
       pricing:
-        per_image: 0.1
+        currency: CNY
+        per_image: 0.01
       submit_timeout_seconds: 240
+    - name: gpt-image-2-6
+      tool_name: relay_tststs_gpt_image_2_6
+      model: gpt-image-2.6
+      protocol: openai_images
+      capabilities:
+      - text_to_image
+      - image_to_image
+      image_input: multipart
+      limits:
+        max_reference_images: 4
+        size_map:
+          '16:9': 1536x864
+          '9:16': 864x1536
+          '1:1': 1024x1024
+      defaults:
+        size: 864x1536
+      pricing:
+        currency: CNY
+        per_image: 0.01
+      submit_timeout_seconds: 240
+      best_for:
+      - 文字渲染
+      - 商品保真图生图
+      - 分镜首帧
+      - 风格化修图
   tststs-video:
     enabled: true
     display_name: vvvvvip 中转（生视频）
@@ -171,7 +199,8 @@ relays:
         aspect_ratio: '9:16'
         resolution: 720p
       pricing:
-        per_second: 0.12
+        currency: CNY
+        per_second: 0.09
       poll:
         interval_seconds: 5
         timeout_seconds: 900
