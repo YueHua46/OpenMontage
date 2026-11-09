@@ -237,6 +237,11 @@ class RelayVideo(RelayToolBase):
             if refs:
                 loaded = [self._load_image(r) for r in refs]
                 variables["reference_images"] = [self._encode(i) for i in loaded]
+                # xAI-compatible relays accept references as {url: ...} objects.
+                # Keep the existing string list for other request templates.
+                variables["reference_image_objects"] = [
+                    {"url": value} for value in variables["reference_images"]
+                ]
                 media_digest["reference_images"] = [self._image_digest(i) for i in loaded]
             media = []
             for field_name, role in (("first_frame", "first_frame"), ("last_frame", "last_frame")):
@@ -249,7 +254,7 @@ class RelayVideo(RelayToolBase):
 
         output_path, job_path = self._paths(inputs, f"{self.name}.mp4")
         estimated = self._estimated_cost_or_none(inputs)
-        summary = {k: v for k, v in variables.items() if k not in {"first_frame", "last_frame", "reference_images", "first_frame_file", "last_frame_file", "media"} and v is not None}
+        summary = {k: v for k, v in variables.items() if k not in {"first_frame", "last_frame", "reference_images", "reference_image_objects", "first_frame_file", "last_frame_file", "media"} and v is not None}
         summary.update(media_digest)
         req = JobRequest(
             tool_name=self.name,

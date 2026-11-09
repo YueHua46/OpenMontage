@@ -7,7 +7,7 @@ Run from the OpenMontage repo with its venv:
 
 Master file:
 {
-  "name": "farm", "resolution": "768P", "budget_per_variant_usd": 4.0, "vary": ["scene", "lead", "line_1"],
+  "name": "farm", "resolution": "720p", "video_tool": "(optional)", "image_tool": "(optional)", "budget_per_variant_usd": 4.0, "vary": ["scene", "lead", "line_1"],
   "fixed": {"product": "white solar PTZ camera ..."},
   "shots": [{"id": "a1", "refs": ["{{lead_ref}}", "C:/assets/install.png"], "frame_prompt": "{{product}} in {{scene}} with {{lead}}",
              "duration": 6, "video_prompt": "{{lead}} says: {{line_1}}", "key": true}],
@@ -23,8 +23,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path.cwd()))
 
-RATES = {"768P": 0.0269, "2K": 0.0431}
-IMAGE_RATE = 0.08
+
+
+def quote(master):
+    """Prices from the relay config, so any configured model (per second, per request) is priced right."""
+    from batch_generate import FALLBACK_IMAGE_TOOL, FALLBACK_VIDEO_TOOL, check_limits, default_tool, get_tool
+
+    image = get_tool(master.get("image_tool") or default_tool("image", FALLBACK_IMAGE_TOOL))
+    video = get_tool(master.get("video_tool") or default_tool("video", FALLBACK_VIDEO_TOOL))
+    res, aspect = master.get("resolution"), master.get("aspect_ratio", "9:16")
+    check_limits(video, res, aspect)
+    per_image = image.estimate_cost({"prompt": "x", "aspect_ratio": aspect, "generation_mode": "generate"})
+
+    def clip_cost(duration):
+        return video.estimate_cost({"prompt": "x", "duration": duration, "resolution": res, "aspect_ratio": aspect, "operation": "image_to_video"})
+
+    return image.name, video.name, per_image, clip_cost
 
 
 def fill(value, data):
@@ -43,9 +57,10 @@ def main():
     ap.add_argument("--create", action="store_true", help="create the project folders and shot specs")
     args = ap.parse_args()
     master = json.loads(Path(args.master).read_text(encoding="utf-8"))
-    res = master.get("resolution", "768P")
-    if res not in RATES:
-        sys.exit(f"Unknown resolution {res}")
+    res = master.get("resolution")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    image_tool, video_tool, image_rate, clip_cost = quote(master)
+    print(f"Prices from config: {image_tool} ${image_rate:.4f}/image, {video_tool} ${clip_cost(5):.4f} per 5 s clip")
     vary = master.get("vary", [])
     variants = master["variants"]
 
@@ -67,13 +82,13 @@ def main():
         left = sorted(set(re.findall(r"\{\{(\w+)\}\}", json.dumps(shots, ensure_ascii=False))))
         if left:
             problems.append(f"{v['id']} has unfilled fields: {', '.join(left)}")
-        seconds = sum(s["duration"] for s in shots)
         key = [s for s in shots if s.get("key")]
-        full = round(len(shots) * IMAGE_RATE + seconds * RATES[res], 2)
-        review = round(len(key) * IMAGE_RATE, 2)
+        full = round(len(shots) * image_rate + sum(clip_cost(s["duration"]) for s in shots), 2)
+        review = round(len(key) * image_rate, 2)
         if full > master.get("budget_per_variant_usd", 4.0):
             problems.append(f"{v['id']} costs ${full}, over the per-version budget")
-        specs[v["id"]] = {"budget_usd": master.get("budget_per_variant_usd", 4.0), "resolution": res, "aspect_ratio": master.get("aspect_ratio", "9:16"), "shots": shots}
+        specs[v["id"]] = {"budget_usd": master.get("budget_per_variant_usd", 4.0), "resolution": res, "image_tool": image_tool, "video_tool": video_tool,
+                          **{k: master[k] for k in ("video_inputs", "max_retakes", "checks", "playbook") if k in master}, "aspect_ratio": master.get("aspect_ratio", "9:16"), "shots": shots}
         rows.append({"id": v["id"], **{f: str(v.get(f, ""))[:40] for f in vary}, "shots": len(shots), "key_frames": len(key), "key_frame_usd": review, "full_usd": full})
 
     print(json.dumps(rows, ensure_ascii=False, indent=1))

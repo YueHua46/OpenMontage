@@ -5,9 +5,18 @@ Run from the OpenMontage repo with its venv:
   python -X utf8 <skill>/scripts/batch_generate.py --project <id> --spec shots.json --stage frames --dry-run
   python -X utf8 <skill>/scripts/batch_generate.py --project <id> --spec shots.json --stage videos --only a1 a2
 
-Spec: {"budget_usd": 4.0, "resolution": "768P", "shots": [{"id": "a1", "refs": ["assets/images/source/x.png"],
-"frame_prompt": "...", "duration": 6, "video_prompt": "..."}]}
-Refs are relative to the project folder. A shot with no refs uses text-to-image.
+Spec (paths relative to the project folder unless absolute):
+{"budget_usd": 4.0, "resolution": "720p", "aspect_ratio": "9:16", "video_tool": "...", "image_tool": "...",
+ "video_inputs": {"extra_params": {...}},
+ "shots": [{"id": "a1", "refs": ["assets/images/source/x.png"], "frame_prompt": "...", "duration": 6,
+            "video_prompt": "...", "take": 1, "frame_take": 1, "video_inputs": {"last_frame_path": "same"}}]}
+
+- A shot with no refs uses text-to-image.
+- take N > 1 writes assets/video/<id>-takeN.mp4 (frame_take likewise for frames), so earlier takes are kept.
+  review_shots.py retake bumps these numbers; do not overwrite an earlier take.
+- video_inputs (spec level, then shot level) is merged into the video tool inputs, e.g. extra_params,
+  last_frame_path ("same" = the shot's first frame), reference_image_paths, operation.
+- Resolution, aspect ratio and price come from the tool's relay config, so any configured model works.
 Existing outputs are skipped. --resubmit is a new paid attempt and needs user approval.
 """
 import argparse
@@ -25,7 +34,6 @@ from tools.tool_registry import registry  # noqa: E402
 # so switching models (python -m tools.relay route ...) needs no script change.
 FALLBACK_IMAGE_TOOL = "relay_tststs_gpt_image_2_6"
 FALLBACK_VIDEO_TOOL = "relay_omniakey_minimax_h3"
-RATES = {"768P": 0.0269, "2K": 0.0431}
 
 
 def default_tool(kind, fallback):
@@ -37,10 +45,56 @@ def default_tool(kind, fallback):
         return fallback
 
 
+def take_name(sid, take):
+    take = int(take or 1)
+    return sid if take == 1 else f"{sid}-take{take}"
+
+
+def frame_file(proj, shot):
+    return proj / "assets/images" / f"{take_name(shot['id'], shot.get('frame_take'))}.png"
+
+
+def video_file(proj, shot):
+    return proj / "assets/video" / f"{take_name(shot['id'], shot.get('take'))}.mp4"
+
+
 def size_of(path):
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
                          capture_output=True, text=True).stdout.strip()
     return tuple(int(x) for x in out.split(",")[:2]) if out else (0, 0)
+
+
+def get_tool(name):
+    registry.ensure_discovered()
+    tool = registry.get(name)
+    if tool is None:
+        sys.exit(f"tool {name} is not registered; run python -m tools.relay list")
+    return tool
+
+
+def check_limits(tool, resolution, aspect_ratio):
+    """Refuse values the configured model does not list, instead of failing after submit."""
+    limits = getattr(getattr(tool, "relay_model", None), "limits", {}) or {}
+    allowed = [str(r).lower() for r in limits.get("resolutions", [])]
+    if resolution and allowed and str(resolution).lower() not in allowed:
+        sys.exit(f"{tool.name} does not list resolution {resolution}; configured: {limits['resolutions']}")
+    ratios = [str(r) for r in limits.get("aspect_ratios", [])]
+    if aspect_ratio and ratios and aspect_ratio not in ratios:
+        sys.exit(f"{tool.name} does not list aspect ratio {aspect_ratio}; configured: {ratios}")
+
+
+def resolve(proj, value):
+    return value if Path(value).is_absolute() else str(proj / value)
+
+
+def video_extra(proj, spec, shot, frame):
+    merged = {**spec.get("video_inputs", {}), **shot.get("video_inputs", {})}
+    for key, value in list(merged.items()):
+        if key.endswith("_path") and isinstance(value, str):
+            merged[key] = str(frame) if value == "same" else resolve(proj, value)
+        elif key.endswith("_paths") and isinstance(value, list):
+            merged[key] = [str(frame) if v == "same" else resolve(proj, v) for v in value]
+    return merged
 
 
 def main():
@@ -51,106 +105,122 @@ def main():
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--resubmit", action="store_true", help="new paid attempt; only after user approval")
-    ap.add_argument("--image-tool", default=default_tool("image", FALLBACK_IMAGE_TOOL))
-    ap.add_argument("--video-tool", default=default_tool("video", FALLBACK_VIDEO_TOOL))
+    ap.add_argument("--image-tool")
+    ap.add_argument("--video-tool")
     ap.add_argument("--workers", type=int)
+    ap.add_argument("--skip-frame-review", action="store_true", help="generate videos from unreviewed frames; only with user approval")
     args = ap.parse_args()
 
     proj = Path("projects") / args.project
     if not proj.exists():
         sys.exit(f"Project not found from {Path.cwd()}: {proj}")
     spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
-    resolution = spec.get("resolution", "768P")
-    if resolution not in RATES:
-        sys.exit(f"Unknown resolution {resolution}")
+    image_tool_name = args.image_tool or spec.get("image_tool") or default_tool("image", FALLBACK_IMAGE_TOOL)
+    video_tool_name = args.video_tool or spec.get("video_tool") or default_tool("video", FALLBACK_VIDEO_TOOL)
+    aspect = spec.get("aspect_ratio", "9:16")
+    resolution = spec.get("resolution")
     shots = [s for s in spec["shots"] if not args.only or s["id"] in args.only]
-    images, videos = proj / "assets/images", proj / "assets/video"
-    images.mkdir(parents=True, exist_ok=True)
-    videos.mkdir(parents=True, exist_ok=True)
+    (proj / "assets/images").mkdir(parents=True, exist_ok=True)
+    (proj / "assets/video").mkdir(parents=True, exist_ok=True)
+
+    tool_name = image_tool_name if args.stage == "frames" else video_tool_name
+    tool = get_tool(tool_name)
+    if args.stage == "videos":
+        check_limits(tool, resolution, aspect)
+
+    # First-frame gate: when the spec has acceptance checks, a video is only made from a frame that
+    # review_shots.py marked pass. Frames are cheap; most defects (phone reversed, extra device) start there.
+    review = {}
+    if args.stage == "videos" and spec.get("checks") and not args.skip_frame_review:
+        review = (json.loads((proj / "review.json").read_text(encoding="utf-8")) if (proj / "review.json").exists() else {}).get("shots", {})
 
     jobs = {}
     for s in shots:
         sid = s["id"]
+        frame = frame_file(proj, s)
         if args.stage == "frames":
-            out = images / f"{sid}.png"
-            refs = [str(proj / r) for r in s.get("refs", [])]
+            out = frame
+            refs = [resolve(proj, r) for r in s.get("refs", [])]
             missing = [r for r in refs if not Path(r).exists()]
             if missing:
                 sys.exit(f"{sid}: missing refs {missing}")
-            inputs = {"preferred_tool": args.image_tool, "generation_mode": "edit" if refs else "generate", "aspect_ratio": spec.get("aspect_ratio", "9:16"),
+            inputs = {"preferred_tool": tool_name, "generation_mode": "edit" if refs else "generate", "aspect_ratio": aspect,
                       "output_path": str(out), "scene_id": sid, "prompt": s["frame_prompt"]}
             if refs:
                 inputs["image_paths"] = refs
-            registry.ensure_discovered()
-            image_tool = registry.get(args.image_tool)
-            if image_tool is None:
-                sys.exit(f"image tool {args.image_tool} is not registered; run python -m tools.relay list")
-            cost = image_tool.estimate_cost(inputs)  # price from the relay config
         else:
-            out = videos / f"{sid}.mp4"
-            frame = images / f"{sid}.png"
-            if not frame.exists():
+            out = video_file(proj, s)
+            if not frame.exists() and not args.dry_run:
                 sys.exit(f"{sid}: first frame missing: {frame}")
-            inputs = {"preferred_tool": args.video_tool, "operation": "image_to_video", "reference_image_path": str(frame), "duration": s["duration"],
-                      "resolution": resolution, "aspect_ratio": spec.get("aspect_ratio", "9:16"), "output_path": str(out), "scene_id": sid, "prompt": s["video_prompt"]}
-            cost = round(s["duration"] * RATES[resolution], 4)
+            if spec.get("checks") and not args.skip_frame_review and not args.dry_run and not out.exists():
+                verdict = review.get(sid, {}).get("frames", {}).get(str(s.get("frame_take", 1)), {}).get("verdict")
+                if verdict != "pass":
+                    print(f"{sid}: first frame {frame.name} is {verdict or 'not reviewed'}; review it (review_shots.py sheet/mark --stage frames) first. Skipped.")
+                    continue
+            inputs = {"preferred_tool": tool_name, "operation": "image_to_video", "reference_image_path": str(frame), "duration": s["duration"],
+                      "aspect_ratio": aspect, "output_path": str(out), "scene_id": sid, "prompt": s["video_prompt"]}
+            if resolution:
+                inputs["resolution"] = resolution
+            inputs.update(video_extra(proj, spec, s, frame))
         if out.exists() and not args.resubmit and not args.dry_run:
-            print(f"{sid}: already exists, skipped")
+            print(f"{out.stem}: already exists, skipped")
             continue
         if args.resubmit:
             inputs["confirm_resubmit"] = True
-        jobs[sid] = (inputs, cost)
+        try:
+            cost = round(tool.estimate_cost(inputs), 4)  # price from the relay config
+        except Exception as exc:
+            sys.exit(f"{sid}: no price for {tool_name}: {exc}")
+        jobs[out.stem] = (inputs, cost)
 
     total = round(sum(c for _, c in jobs.values()), 4)
-    print(f"{args.stage}: {len(jobs)} job(s), estimated ${total}")
+    print(f"{args.stage} with {tool_name}: {len(jobs)} job(s), estimated ${total}")
     if not jobs:
         return
-    registry.discover()
     selector = registry.get("image_selector" if args.stage == "frames" else "video_selector")
 
     if args.dry_run:
-        for sid, (inputs, _) in jobs.items():
-            probe = dict(inputs, dry_run=True)
-            if args.stage == "videos" and not Path(probe["reference_image_path"]).exists():
+        for key, (inputs, cost) in jobs.items():
+            if args.stage == "videos" and not Path(inputs["reference_image_path"]).exists():
+                print(key, "dry_run skipped: first frame not generated yet", f"${cost}")
                 continue
-            r = selector.execute(probe)
-            print(sid, "dry_run", r.success, r.error or "")
+            r = selector.execute(dict(inputs, dry_run=True))
+            print(key, "dry_run", r.success, f"${cost}", r.error or "")
         return
 
-    tool = args.image_tool if args.stage == "frames" else args.video_tool
     tracker = CostTracker(budget_total_usd=spec.get("budget_usd", 4.0), cost_log_path=proj / "cost_log.json")
-    tracker.approve_tool(tool)
+    tracker.approve_tool(tool_name)
     entries = {}
-    for sid, (_, cost) in jobs.items():
-        entry = tracker.estimate(tool, sid, cost)
+    for key, (_, cost) in jobs.items():
+        entry = tracker.estimate(tool_name, key, cost)
         tracker.reserve(entry)
-        entries[sid] = entry
+        entries[key] = entry
 
     def run(item):
-        sid, (inputs, _) = item
+        key, (inputs, _) = item
         try:
             r = selector.execute(inputs)
-            return sid, r.success, r.error, r.cost_usd, (r.data or {}).get("status")
+            return key, r.success, r.error, r.cost_usd, (r.data or {}).get("status")
         except Exception as exc:
-            return sid, False, repr(exc)[:300], 0, None
+            return key, False, repr(exc)[:300], 0, None
 
     workers = args.workers or (6 if args.stage == "frames" else 3)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         rows = list(pool.map(run, jobs.items()))
 
     failed = 0
-    for sid, ok, err, cost, status in rows:
+    for key, ok, err, cost, status in rows:
         if ok:
-            tracker.reconcile(entries[sid], cost or jobs[sid][1], True)
+            tracker.reconcile(entries[key], cost or jobs[key][1], True)
         else:
-            tracker.refund(entries[sid])
+            tracker.refund(entries[key])
             failed += 1
-        print(sid, "ok" if ok else "FAILED", status or "", str(err or "")[:200])
-    if args.stage == "frames":
-        for sid in jobs:
-            w, h = size_of(images / f"{sid}.png")
-            if h and abs(w / h - 9 / 16) > 0.01 and spec.get("aspect_ratio", "9:16") == "9:16":
-                print(f"{sid}: returned {w}x{h}, not 9:16. Keep the original and ask before cropping.")
+        print(key, "ok" if ok else "FAILED", status or "", str(err or "")[:200])
+    if args.stage == "frames" and aspect == "9:16":
+        for key in jobs:
+            w, h = size_of(proj / "assets/images" / f"{key}.png")
+            if h and abs(w / h - 9 / 16) > 0.01:
+                print(f"{key}: returned {w}x{h}, not 9:16. Keep the original and ask before cropping.")
     print(tracker.cost_snapshot())
     sys.exit(1 if failed else 0)
 

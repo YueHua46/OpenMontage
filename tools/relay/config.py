@@ -357,7 +357,7 @@ def _template_vars(node: Any) -> set[str]:
 _GENERIC_REQUIRES = {
     "image_to_video": {"first_frame", "first_frame_file", "media"},
     "first_last_frame": {"last_frame", "last_frame_file", "media"},
-    "reference_to_video": {"reference_images", "media"},
+    "reference_to_video": {"reference_images", "reference_image_objects", "media"},
     "image_to_image": {"images", "first_frame", "first_frame_file"},
 }
 

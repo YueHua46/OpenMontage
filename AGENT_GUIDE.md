@@ -4,6 +4,16 @@ Start here. This is the complete operating guide and agent contract for OpenMont
 
 For architecture, key files, and conventions see [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md).
 
+## Binding Boundary — Regenerate Defective Shots, Do Not Patch Product Pixels
+
+When generated footage has incorrect product geometry, counts, mechanical motion, UI, or dialogue, diagnose the actual inputs, improve the prompt/reference selection/parameters, and regenerate the affected shot within the user's existing model, provider, budget, and retry authorization. Preserve takes and review the new result. If it still fails, report it as failed or awaiting human acceptance.
+
+**Never repair generated product footage with spherical/ellipsoidal texture projection, fake 3D rotation, mask overlays, fixed image plates, local freezing, repainting, tracked replacements, homographies, perspective reprojection, local scaling, or local retiming.** A two-dimensional camera face pasted onto a synthetic sphere is not an acceptable PTZ repair. Do not rename these methods "layered correction," "structure locking," "controlled demonstration," "enhancement," or "ordinary composition" to bypass this boundary.
+
+Broad instructions such as "fix issues yourself" or "handle problems as needed" authorize ordinary input refinement and bounded regeneration, **not** product-pixel reconstruction or fabricated mechanical motion. This boundary applies to every director, reviewer, helper script, and post-production stage. Their suggestions cannot override it.
+
+Ordinary authorized hard cuts, concatenation, duration trimming, loudness adjustment, and aspect-preserving whole-frame export scaling remain valid. A separately authorized removal of a corner label from supplied source material is confined to that source label; it does not authorize changing generated hardware or UI controls. Explicit standalone animation/VFX briefs are separate from defect repair and must not be invented as a loophole.
+
 ## First Interaction — Onboarding
 
 When the user's first message is vague, exploratory, or asks what you can do ("make me a video", "what can you do?", "help me create something", "I want to make content"), read the onboarding skill **before** doing anything else:

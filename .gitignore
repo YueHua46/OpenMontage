@@ -108,3 +108,6 @@ venv/
 # Relay provider config (references env var names only; still user-specific)
 relay_providers.yaml
 *.relay-job.json.part
+
+# Playbooks distilled from client projects (product data, local paths)
+playbooks/
