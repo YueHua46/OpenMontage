@@ -41,7 +41,7 @@ from tools.tool_registry import registry  # noqa: E402
 # Fallbacks only; the live defaults come from routing.default_tools in the relay config,
 # so switching models (python -m tools.relay route ...) needs no script change.
 FALLBACK_IMAGE_TOOL = "relay_tststs_gpt_image_2_6"
-FALLBACK_VIDEO_TOOL = "relay_omniakey_minimax_h3"
+FALLBACK_VIDEO_TOOL = "relay_tststs_grok_video_1_5"
 
 
 def default_tool(kind, fallback):

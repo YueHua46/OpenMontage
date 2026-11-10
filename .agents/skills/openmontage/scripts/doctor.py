@@ -15,11 +15,11 @@ import urllib.request
 from pathlib import Path
 
 REQUIRED_KEYS = {
-    "TSTSTS_MEDIA_API_KEY": "images (gpt-image-2.6)",
-    "OMNIAKEY_API_KEY": "video (MiniMax H3)",
+    "TSTSTS_MEDIA_API_KEY": "images (gpt-image-2.6) and video (Grok Imagine 1.5)",
     "FISH_AUDIO_API_KEY": "voiceover (Fish Audio)",
 }
-OPTIONAL_KEYS = {"TSTSTS_TEXT_API_KEY": "text helpers"}
+OPTIONAL_KEYS = {"TSTSTS_TEXT_API_KEY": "text helpers", "OMNIAKEY_API_KEY": "video alternative (MiniMax H3)"}
+VIDEO_SERVICE_URL = "https://vvvvvip.tststs.shop/"  # relay of the default video model
 
 
 def find_repo(arg):
@@ -107,7 +107,7 @@ def main():
             report(False, "relay check ran", (err or out)[-300:])
 
     try:
-        urllib.request.urlopen(urllib.request.Request("https://api.omniakey.com/", headers={"User-Agent": "openmontage-doctor"}), timeout=15)
+        urllib.request.urlopen(urllib.request.Request(VIDEO_SERVICE_URL, headers={"User-Agent": "openmontage-doctor"}), timeout=15)
         online = True
     except urllib.error.HTTPError:
         online = True

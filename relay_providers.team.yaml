@@ -21,7 +21,7 @@ routing:
   paid_provider_policy: relay_only
   default_tools:
     image: relay_tststs_gpt_image_2_6
-    video: relay_omniakey_minimax_h3
+    video: relay_tststs_grok_video_1_5
 relays:
   tststs:
     display_name: vvvvvip 中转（生图）

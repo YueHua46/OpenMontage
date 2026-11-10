@@ -5,7 +5,7 @@
 各渠道并存，图片和视频分别选择；持久化默认值以仓库 `relay_providers.yaml` 的 `routing.default_tools` 为准，不以本文件的历史示例代替当前配置。当前约定：
 
 - 图片：tokenshop / tststs，默认 `relay_tststs_gpt_image_2_6`（gpt-image-2.6，¥0.006–0.01/张）；`gpt-image-2`、`gpt-image-2.5` 仍保留，点名可用。
-- 视频：OmniaKey MiniMax H3，默认 `relay_omniakey_minimax_h3`，端点 `https://api.omniakey.com/v1/media/tasks`，密钥变量 `OMNIAKEY_API_KEY`；tokenshop 的 `relay_tststs_grok_video_1_5` 保留为可切回的渠道。
+- 视频：tokenshop Grok Imagine Video 1.5，默认 `relay_tststs_grok_video_1_5`（运营反馈效果更好），密钥变量 `TSTSTS_MEDIA_API_KEY`。OmniaKey MiniMax H3（`relay_omniakey_minimax_h3`，端点 `https://api.omniakey.com/v1/media/tasks`，密钥变量 `OMNIAKEY_API_KEY`）保留为可切换的渠道，用户指定或按分镜 `video_tool` 时使用。
 - 配音：Fish Audio 直连（非中转站），工具 `fish_audio_tts`，密钥变量 `FISH_AUDIO_API_KEY`，详见下方「配音（Fish Audio）」。
 - 密钥只放在仓库 `.env` 或环境变量中；不写入技能、YAML、示例、日志或交付物。
 
