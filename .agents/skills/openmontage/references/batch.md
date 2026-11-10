@@ -42,7 +42,7 @@
 5. 按 1.3 审查并 `mark`。
 6. 不通过的镜头：按 SKILL.md 的“默认修复路径”找原因（先看是不是首帧就错了），改提示词或首帧，再 `review_shots.py retake <镜头> --reason "偏差和改法" --prompt-file 新提示词.txt [--new-frame --frame-prompt-file 新首帧提示词.txt]`，然后 `batch_generate.py --only <镜头>`。新的一版存为 `<镜头>-take2.mp4`，旧版保留。
 7. 次数用完脚本会拒绝重生成。此时把镜头标为“未通过/待人工验收”，说明偏差和已尝试的写法，由用户决定。
-8. `review_shots.py status` 列出每个镜头的结论和已选用的版本，`edit.json` 的 `clip` 直接用这里的名字（如 `a2-take2`）。
+8. `review_shots.py status` 列出每个镜头的结论和已选用的版本（`sheet --take N` / `mark --take N` 可补审旧版本，例如给已经做完的项目补验收再沉淀方法卡），`edit.json` 的 `clip` 直接用这里的名字（如 `a2-take2`）。
 
 ### 1.3 审查方法（防止只看清单、防止自相矛盾）
 
@@ -67,7 +67,9 @@
 
 ## 3. 用方法卡做新的片子
 
-1. 读方法卡，按新需求（新产品、新场景、新人物、新台词）写新的 `shots.json`。每个镜头的 `purpose` 尽量沿用方法卡里的说法，提示词参考写法示例重新写，不要原样照抄旧产品的描述。
+用户说“按上次那条做”“用 P52 的做法”时，先运行 `playbook.py list` 列出本机已有的方法卡（名字、状态、来源项目、已验证的镜头），按来源项目和镜头用途找到对应的那张；找不到就问用户，不要凭记忆重写一套。
+
+1. 读方法卡，先看 `method`（含 `model_notes`）和未解决镜头的教训，再按新需求（新产品、新场景、新人物、新台词）写新的 `shots.json`。每个镜头的 `purpose` 尽量沿用方法卡里的说法，提示词参考写法示例重新写，不要原样照抄旧产品的描述。
 2. `playbook.py apply --playbook playbooks/<方法名>.json --project <新id> --spec shots.json`：补齐模型参数，挂上全局规则和对应镜头的规则，打印每个镜头的写法示例和教训。方法卡里没有的镜头会提示“新镜头类型”，要重点检查。
 3. 照第 1 节的闭环生成和验收：`batch_generate.py --dry-run` 报价并经用户确认，出首帧，出视频，验收，有限次重生成。
 4. 合成按 `references/compose.md`。

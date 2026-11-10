@@ -4,7 +4,7 @@ zoomed regions, consistent verdicts and bounded retakes. The agent is the review
 
 Run from the OpenMontage repo with its venv (paid generation still goes through batch_generate.py):
   python -X utf8 <S>/review_shots.py lint   --project <id> --spec shots.json
-  python -X utf8 <S>/review_shots.py sheet  --project <id> --spec shots.json --stage frames|videos [--only a1] [--lang es]
+  python -X utf8 <S>/review_shots.py sheet  --project <id> --spec shots.json --stage frames|videos [--only a1] [--take 2] [--lang es]
   python -X utf8 <S>/review_shots.py mark   --project <id> --spec shots.json a1 --stage frames|videos --verdict pass|fail \
          --observed "what the images show" --ok rest --failed <ids> [--new-check motion:"..."]
   python -X utf8 <S>/review_shots.py retake --project <id> --spec shots.json a1 --reason "..." --prompt-file f.txt [--new-frame --frame-prompt-file g.txt]
@@ -265,8 +265,11 @@ def cmd_sheet(r, args):
         if args.only and sid not in args.only:
             continue
         n, item = r.latest(sid, stage)
+        if args.take:  # an earlier take, e.g. to review an existing project or compare versions
+            n = str(args.take)
+            item = r.data["shots"][sid]["takes" if stage == "videos" else "frames"].get(n)
         if not item:
-            print(f"{sid}: no {stage[:-1]} generated yet")
+            print(f"{sid}: no {stage[:-1]} {'take ' + n if args.take else ''} generated yet")
             continue
         if item["verdict"] != "pending" and not args.only:
             continue
@@ -441,11 +444,12 @@ def main():
             p.add_argument("--only", nargs="*")
             p.add_argument("--lang", help="dialogue language for the ASR check, e.g. es, en, zh")
             p.add_argument("--fps", type=float, default=FPS, help="sampled frames per second (default 3)")
+        if name in ("sheet", "mark"):
+            p.add_argument("--take", type=int, help="a specific take instead of the latest")
         if name in ("mark", "retake"):
             p.add_argument("shot")
         if name == "mark":
             p.add_argument("--verdict", choices=("pass", "fail"), required=True)
-            p.add_argument("--take", type=int)
             p.add_argument("--observed", help="what the images show, written before reading the checks")
             p.add_argument("--ok", nargs="*", default=[], help="ids of checks that hold, or `rest`")
             p.add_argument("--failed", nargs="*", default=[], help="ids of failed checks")

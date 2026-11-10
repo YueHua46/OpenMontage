@@ -2,6 +2,7 @@
 """Turn a reviewed project into a reusable playbook, and start a new project from one. No paid calls.
 
 Run from the OpenMontage repo with its venv:
+  python -X utf8 <skill>/scripts/playbook.py list
   python -X utf8 <skill>/scripts/playbook.py save  --project <done-id> --spec shots.json --name <name>
   python -X utf8 <skill>/scripts/playbook.py check --playbook playbooks/<name>.json
   python -X utf8 <skill>/scripts/playbook.py apply --playbook playbooks/<name>.json --project <new-id> --spec new_shots.json
@@ -75,7 +76,7 @@ def cmd_save(args):
         if passed:
             frame_prompt, image_tool = image_job(proj, s)
             entry["example"] = {"clip": passed["clip"], "video_prompt": passed.get("prompt"), "frame_prompt": frame_prompt or s.get("frame_prompt"),
-                                "image_tool": image_tool, "dialogue": s.get("dialogue"),
+                                "image_tool": image_tool, "dialogue": s.get("dialogue"), "why_it_worked": passed.get("notes", ""),
                                 "refs": [{"path": p, "sha256": sha(p if Path(p).is_absolute() else proj / p)} for p in s.get("refs", [])]}
         failed_notes = [a["notes"] for a in attempts if a["verdict"] == "fail" and a["notes"]]
         entry["lessons"] = failed_notes or ([f"{TODO}: why it still fails and what was tried"] if status == "unresolved" else [])
@@ -141,6 +142,8 @@ def cmd_apply(args):
         s["checks"] = norm_checks(s.get("checks")) + [c for c in ref["checks"] if c["id"] not in own]
         if ref["status"] == "proven":
             print("  worked example prompt:\n   ", (ref["example"].get("video_prompt") or "")[:600].replace("\n", "\n    "))
+            if ref["example"].get("why_it_worked"):
+                print("  why it worked:", ref["example"]["why_it_worked"])
         else:
             print(f"  UNRESOLVED in the source project ({ref['retakes_used']} retakes). Lessons:")
         for lesson in ref.get("lessons", []):
@@ -149,9 +152,21 @@ def cmd_apply(args):
     print(f"\n{spec_path}: model settings and checks added. Next: batch_generate.py --dry-run, then the review loop.")
 
 
+def cmd_list(args):
+    books = sorted(Path("playbooks").glob("*.json"))
+    if not books:
+        print("no playbooks yet (playbooks/*.json)")
+    for path in books:
+        book = load(path) or {}
+        purposes = [s.get("purpose") for s in book.get("shots", []) if s.get("status") == "proven"]
+        print(f"{path}  [{book.get('status')}]  from {book.get('source_project')}  {book.get('created')}  {book.get('summary')}")
+        print(f"   model: {book.get('model', {}).get('video_tool')}  proven shots: {purposes}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list")
     p = sub.add_parser("save")
     p.add_argument("--project", required=True)
     p.add_argument("--spec", required=True)
@@ -165,7 +180,7 @@ def main():
     p.add_argument("--project", required=True)
     p.add_argument("--spec", required=True)
     args = ap.parse_args()
-    {"save": cmd_save, "check": cmd_check, "apply": cmd_apply}[args.cmd](args)
+    {"list": cmd_list, "save": cmd_save, "check": cmd_check, "apply": cmd_apply}[args.cmd](args)
 
 
 if __name__ == "__main__":
