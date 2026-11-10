@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="#本仓库新增中转出片逐镜验收方法卡与并发批量">批量出片与方法卡（中文）</a> &nbsp;·&nbsp;
   <a href="#start-from-a-video-you-already-love">Paste A Video</a> &nbsp;·&nbsp;
   <a href="#quick-start">Quick Start</a> &nbsp;·&nbsp;
   <a href="#try-these-prompts">Try These Prompts</a> &nbsp;·&nbsp;
@@ -46,6 +47,31 @@
   <a href="https://x.com/calesthioailabs"><img src="https://img.shields.io/badge/X-%40calesthioailabs-111111?style=for-the-badge&logo=x&logoColor=white" alt="X"></a>
   <a href="https://github.com/calesthio/OpenMontage/discussions"><img src="https://img.shields.io/badge/Community-GitHub%20Discussions-0b1220?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Discussions"></a>
 </p>
+
+---
+
+## 本仓库新增：中转出片、逐镜验收、方法卡与并发批量
+
+> 这一节是本 fork（YueHua46/OpenMontage）新增的功能，上游 README 其余部分没有提到。全部功能在技能目录 [`.agents/skills/openmontage/`](.agents/skills/openmontage/SKILL.md) 里，Codex 和 Claude Code 读这个技能后按流程执行；你只需要用中文告诉 Agent 要做什么，在审核点确认即可。
+
+| 需求 | 是否支持 | 怎么实现 |
+|---|---|---|
+| 通过中转站生成图片和视频 | ✅ | 渠道和模型写在 [`relay_providers.team.yaml`](relay_providers.team.yaml)，不含密钥；默认生图 gpt-image-2.6，默认生视频 Grok Imagine 1.5（支持首帧、首尾帧），MiniMax H3 可切换。说明见 [docs/RELAY_PROVIDERS.zh-CN.md](docs/RELAY_PROVIDERS.zh-CN.md) |
+| 同时生成多个视频 | ✅ | `batch_generate.py --project v1 v2 v3` 把所有片子的所有镜头一次并发提交；可在模型配置里设 `limits.max_concurrent` 或用 `--workers` 限流。每条片子单独记账，预算是硬上限，提交前统一预留，任何一条超预算就一个都不提交；已生成的自动跳过，pending 任务原参数再调用即可恢复。失败不自动重试（重试是新的付费提交，需用户批准） |
+| 逐镜验收、有限次重生成 | ✅ | `review_shots.py`：按 10 个类别（数量、结构、运动、朝向、视角、灯光、文字/UI、人物、动作、台词）给每个镜头写验收规则；首帧审过才出视频；出放大的抽帧页供 Agent 逐帧审查；拒绝自相矛盾的结论；重生成次数有上限，旧版保留 |
+| 保存一次制作，后续复用 | ✅ | `playbook.py save/check/list/apply`：把验收通过的片子存成“方法卡”，包括模型参数、拍法和结构、产品规则、验收规则、每镜实际用过的提示词和失败教训。存的是做法，不是固定提示词 |
+| 按样板替换素材、文案批量生成 | ✅ | 只换场景/人物/台词：`plan_variants.py` 变量模板一次生成多个版本；要改镜头：按方法卡重写分镜后 `playbook.py apply` 补齐参数和规则 |
+| 不用像素补丁修生成缺陷 | ✅ | 硬规则：只能改输入后重新生成，不贴图、不遮罩、不伪造产品几何；仍不合格就标“待人工验收” |
+
+**典型用法（对 Agent 说）：**
+
+- “用 OpenMontage 按这个脚本出片，素材在 `D:\xxx`” → 提案和报价 → 首帧审核 → 出视频并逐镜验收 → 试听确认 → 合成。
+- “把这条沉淀成方法卡，叫 `xxx`” → 方法卡草稿 → 你确认后标为可用。
+- “按 `xxx` 方法卡出 5 条，换成这些场景，每条不超过 ¥15” → 5 条同步推进、并发生成，在提案、首帧、视频、试听四个审核点一起停下等你确认。
+
+**更新与环境：** 双击仓库里的 `update.cmd` 拉取最新代码、技能和团队配置（不动 `.env` 里的密钥），再重启 Agent。`.agents/skills/openmontage/scripts/doctor.py` 检查环境，密钥只放在 `.env`。方法卡保存在本机 `playbooks/`，项目在 `projects/`，二者都不提交到 git。
+
+详细流程：[技能说明 SKILL.md](.agents/skills/openmontage/SKILL.md) · [批量与方法卡 batch.md](.agents/skills/openmontage/references/batch.md) · [渠道与模型 providers.md](.agents/skills/openmontage/references/providers.md) · [合成 compose.md](.agents/skills/openmontage/references/compose.md)
 
 ---
 
