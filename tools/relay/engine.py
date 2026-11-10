@@ -134,7 +134,9 @@ def render_template(node: Any, variables: dict[str, Any]) -> Any:
                 rendered = walk(v)
                 if rendered is not _DROP:
                     out[k] = rendered
-            return out
+            # An object whose every field was optional and missing (e.g. `last_frame: {url: "{{last_frame}}"}`
+            # without a last frame) is dropped too, instead of being sent as `{}`.
+            return _DROP if value and not out else out
         if isinstance(value, list):
             return [r for r in (walk(v) for v in value) if r is not _DROP]
         if isinstance(value, str):

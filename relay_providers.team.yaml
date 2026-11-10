@@ -181,6 +181,7 @@ relays:
       capabilities:
       - text_to_video
       - image_to_video
+      - first_last_frame
       image_input: data_uri
       limits:
         duration_range:
@@ -208,7 +209,41 @@ relays:
       poll:
         interval_seconds: 5
         timeout_seconds: 900
-      request: *id001
+      # Same API as grok-video plus an optional last frame (first=last locks the product look).
+      # This body was used live for the P52 run on 2026-11-09 (artifacts/config-first-last.yaml).
+      request:
+        submit:
+          method: POST
+          path: /videos/generations
+          body_format: json
+          body:
+            model: '{{model}}'
+            prompt: '{{prompt}}'
+            duration: '{{duration}}'
+            aspect_ratio: '{{aspect_ratio}}'
+            resolution: '{{resolution}}'
+            image:
+              url: '{{first_frame}}'
+            last_frame:
+              url: '{{last_frame}}'
+        response:
+          task_id: request_id|id|task_id|data.request_id
+          error: error.message|error|message
+        poll:
+          method: GET
+          path: /videos/{task_id}
+          status: status|data.status
+          success:
+          - done
+          - completed
+          - succeeded
+          failure:
+          - failed
+          - expired
+          - error
+          - cancelled
+          error: error.message|error|message
+          result_url: video.url|data.video.url|url
   omniakey:
     display_name: OmniaKey（MiniMax H3 视频）
     base_url: https://api.omniakey.com
