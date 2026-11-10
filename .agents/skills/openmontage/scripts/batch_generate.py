@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Generate first frames or clips from a shot spec, with cost tracking and a concurrency cap.
+"""Generate first frames or clips from shot specs, with cost tracking; several projects run concurrently.
 
 Run from the OpenMontage repo with its venv:
   python -X utf8 <skill>/scripts/batch_generate.py --project <id> --spec shots.json --stage frames --dry-run
   python -X utf8 <skill>/scripts/batch_generate.py --project <id> --spec shots.json --stage videos --only a1 a2
+  python -X utf8 <skill>/scripts/batch_generate.py --project v1 v2 v3 --stage videos     # specs: projects/<id>/shots.json
+
+Batch: every shot of every listed project is submitted at once in one pool. A model can set
+limits.max_concurrent in the relay config when its relay rejects parallel tasks; --workers overrides it.
+Each project keeps its own cost log, budget, first-frame gate and skip-existing behaviour; all budgets are
+reserved before anything is submitted.
 
 Spec (paths relative to the project folder unless absolute):
 {"budget_usd": 4.0, "resolution": "720p", "aspect_ratio": "9:16", "video_tool": "...", "image_tool": "...",
@@ -23,11 +29,13 @@ import argparse
 import json
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path.cwd()))
-from tools.cost_tracker import CostTracker  # noqa: E402
+from lib.config_model import BudgetMode  # noqa: E402
+from tools.cost_tracker import ApprovalRequiredError, BudgetExceededError, CostTracker  # noqa: E402
 from tools.tool_registry import registry  # noqa: E402
 
 # Fallbacks only; the live defaults come from routing.default_tools in the relay config,
@@ -97,24 +105,15 @@ def video_extra(proj, spec, shot, frame):
     return merged
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--project", required=True)
-    ap.add_argument("--spec", required=True)
-    ap.add_argument("--stage", choices=("frames", "videos"), required=True)
-    ap.add_argument("--only", nargs="*")
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--resubmit", action="store_true", help="new paid attempt; only after user approval")
-    ap.add_argument("--image-tool")
-    ap.add_argument("--video-tool")
-    ap.add_argument("--workers", type=int)
-    ap.add_argument("--skip-frame-review", action="store_true", help="generate videos from unreviewed frames; only with user approval")
-    args = ap.parse_args()
-
-    proj = Path("projects") / args.project
+def plan_project(args, project, spec_path):
+    """Build one project's jobs: a dict with proj, spec, tool_name, tool, aspect and jobs {key: (inputs, cost)}."""
+    proj = Path("projects") / project
     if not proj.exists():
         sys.exit(f"Project not found from {Path.cwd()}: {proj}")
-    spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+    spec_path = Path(spec_path) if spec_path else proj / "shots.json"
+    if not spec_path.exists():
+        sys.exit(f"{project}: spec not found: {spec_path}")
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
     image_tool_name = args.image_tool or spec.get("image_tool") or default_tool("image", FALLBACK_IMAGE_TOOL)
     video_tool_name = args.video_tool or spec.get("video_tool") or default_tool("video", FALLBACK_VIDEO_TOOL)
     aspect = spec.get("aspect_ratio", "9:16")
@@ -137,13 +136,16 @@ def main():
     jobs = {}
     for s in shots:
         sid = s["id"]
+        need = "frame_prompt" if args.stage == "frames" else "video_prompt"
+        if not s.get(need):
+            sys.exit(f"{project}/{sid}: no {need} in the spec")
         frame = frame_file(proj, s)
         if args.stage == "frames":
             out = frame
             refs = [resolve(proj, r) for r in s.get("refs", [])]
             missing = [r for r in refs if not Path(r).exists()]
             if missing:
-                sys.exit(f"{sid}: missing refs {missing}")
+                sys.exit(f"{project}/{sid}: missing refs {missing}")
             inputs = {"preferred_tool": tool_name, "generation_mode": "edit" if refs else "generate", "aspect_ratio": aspect,
                       "output_path": str(out), "scene_id": sid, "prompt": s["frame_prompt"]}
             if refs:
@@ -151,11 +153,11 @@ def main():
         else:
             out = video_file(proj, s)
             if not frame.exists() and not args.dry_run:
-                sys.exit(f"{sid}: first frame missing: {frame}")
+                sys.exit(f"{project}/{sid}: first frame missing: {frame}")
             if spec.get("checks") and not args.skip_frame_review and not args.dry_run and not out.exists():
                 verdict = review.get(sid, {}).get("frames", {}).get(str(s.get("frame_take", 1)), {}).get("verdict")
                 if verdict != "pass":
-                    print(f"{sid}: first frame {frame.name} is {verdict or 'not reviewed'}; review it (review_shots.py sheet/mark --stage frames) first. Skipped.")
+                    print(f"{project}/{sid}: first frame {frame.name} is {verdict or 'not reviewed'}; review it (review_shots.py sheet/mark --stage frames) first. Skipped.")
                     continue
             inputs = {"preferred_tool": tool_name, "operation": "image_to_video", "reference_image_path": str(frame), "duration": s["duration"],
                       "aspect_ratio": aspect, "output_path": str(out), "scene_id": sid, "prompt": s["video_prompt"]}
@@ -163,65 +165,135 @@ def main():
                 inputs["resolution"] = resolution
             inputs.update(video_extra(proj, spec, s, frame))
         if out.exists() and not args.resubmit and not args.dry_run:
-            print(f"{out.stem}: already exists, skipped")
+            print(f"{project}/{out.stem}: already exists, skipped")
             continue
         if args.resubmit:
             inputs["confirm_resubmit"] = True
         try:
             cost = round(tool.estimate_cost(inputs), 4)  # price from the relay config
         except Exception as exc:
-            sys.exit(f"{sid}: no price for {tool_name}: {exc}")
+            sys.exit(f"{project}/{sid}: no price for {tool_name}: {exc}")
         jobs[out.stem] = (inputs, cost)
+    return {"project": project, "proj": proj, "spec": spec, "tool_name": tool_name, "tool": tool, "jobs": jobs, "aspect": aspect}
 
-    total = round(sum(c for _, c in jobs.values()), 4)
-    print(f"{args.stage} with {tool_name}: {len(jobs)} job(s), estimated ${total}")
-    if not jobs:
+
+def concurrency(args, tool):
+    """--workers, else the model's limits.max_concurrent in the relay config, else no cap (all jobs at once)."""
+    limit = args.workers or (getattr(getattr(tool, "relay_model", None), "limits", {}) or {}).get("max_concurrent")
+    return int(limit) if limit else None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--project", nargs="+", required=True, help="one or more project ids; all run concurrently")
+    ap.add_argument("--spec", nargs="*", default=[], help="one spec per project, same order; default projects/<id>/shots.json")
+    ap.add_argument("--stage", choices=("frames", "videos"), required=True)
+    ap.add_argument("--only", nargs="*")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--resubmit", action="store_true", help="new paid attempt; only after user approval")
+    ap.add_argument("--image-tool")
+    ap.add_argument("--video-tool")
+    ap.add_argument("--workers", type=int, help="cap concurrent submissions per tool (default: limits.max_concurrent, else no cap)")
+    ap.add_argument("--skip-frame-review", action="store_true", help="generate videos from unreviewed frames; only with user approval")
+    args = ap.parse_args()
+    if args.spec and len(args.spec) != len(args.project):
+        sys.exit(f"--spec needs one file per project ({len(args.project)}), or none to use projects/<id>/shots.json")
+    if len(set(args.project)) != len(args.project):
+        sys.exit("duplicate project ids")
+
+    plans = [plan_project(args, p, args.spec[i] if args.spec else None) for i, p in enumerate(args.project)]
+    total = 0.0
+    for plan in plans:
+        sub = round(sum(c for _, c in plan["jobs"].values()), 4)
+        total += sub
+        print(f"{plan['project']}: {args.stage} with {plan['tool_name']}: {len(plan['jobs'])} job(s), estimated ${sub}")
+    if len(plans) > 1:
+        print(f"all {len(plans)} projects: {sum(len(p['jobs']) for p in plans)} job(s), estimated ${round(total, 4)}")
+    if not any(p["jobs"] for p in plans):
         return
     selector = registry.get("image_selector" if args.stage == "frames" else "video_selector")
 
     if args.dry_run:
-        for key, (inputs, cost) in jobs.items():
-            if args.stage == "videos" and not Path(inputs["reference_image_path"]).exists():
-                print(key, "dry_run skipped: first frame not generated yet", f"${cost}")
-                continue
-            r = selector.execute(dict(inputs, dry_run=True))
-            print(key, "dry_run", r.success, f"${cost}", r.error or "")
+        for plan in plans:
+            for key, (inputs, cost) in plan["jobs"].items():
+                label = f"{plan['project']}/{key}"
+                if args.stage == "videos" and not Path(inputs["reference_image_path"]).exists():
+                    print(label, "dry_run skipped: first frame not generated yet", f"${cost}")
+                    continue
+                r = selector.execute(dict(inputs, dry_run=True))
+                print(label, "dry_run", r.success, f"${cost}", r.error or "")
         return
 
-    tracker = CostTracker(budget_total_usd=spec.get("budget_usd", 4.0), cost_log_path=proj / "cost_log.json")
-    tracker.approve_tool(tool_name)
-    entries = {}
-    for key, (_, cost) in jobs.items():
-        entry = tracker.estimate(tool_name, key, cost)
-        tracker.reserve(entry)
-        entries[key] = entry
+    # Reserve every project's budget before submitting anything. budget_usd is the budget the user
+    # approved, so it is a hard cap: if any project would exceed it, nothing is submitted.
+    # The per-shot price was approved with the batch quote, so only the project budget caps it here.
+    entries, current = {}, None
+    try:
+        for plan in plans:
+            current = plan["project"]
+            tracker = CostTracker(budget_total_usd=plan["spec"].get("budget_usd", 4.0), reserve_pct=0.0,
+                                  single_action_approval_usd=float("inf"), mode=BudgetMode.CAP,
+                                  cost_log_path=plan["proj"] / "cost_log.json")
+            tracker.budget_total_usd = float(plan["spec"].get("budget_usd", 4.0))  # the spec is the approved budget, not the old log
+            tracker.approve_tool(plan["tool_name"])
+            plan["tracker"] = tracker
+            for key, (_, cost) in plan["jobs"].items():
+                entry = tracker.estimate(plan["tool_name"], key, cost)
+                entries[(plan["project"], key)] = entry
+                tracker.reserve(entry)
+    except (BudgetExceededError, ApprovalRequiredError) as exc:
+        for plan in plans:
+            for key in plan["jobs"]:
+                entry = entries.get((plan["project"], key))
+                if entry and "tracker" in plan:
+                    try:
+                        plan["tracker"].refund(entry)
+                    except Exception:
+                        pass  # estimated but never reserved
+        spent = {p["project"]: p["tracker"].cost_snapshot() for p in plans if "tracker" in p}
+        sys.exit(f"Nothing submitted. {current}: {exc}. Spent so far: {spent}. "
+                 f"Ask the user before raising budget_usd in that project's spec.")
+
+    # One pool for all projects: every shot of every project is submitted at once,
+    # capped per tool only when the relay config (or --workers) sets a limit.
+    caps = {plan["tool_name"]: concurrency(args, plan["tool"]) for plan in plans}
+    gates = {name: threading.BoundedSemaphore(limit) if limit else None for name, limit in caps.items()}
+    work = [(plan, key, inputs) for plan in plans for key, (inputs, _) in plan["jobs"].items()]
+    print(f"submitting {len(work)} job(s) concurrently; per-tool cap: {({n: c or 'none' for n, c in caps.items()})}")
 
     def run(item):
-        key, (inputs, _) = item
+        plan, key, inputs = item
+        gate = gates[plan["tool_name"]]
         try:
+            if gate:
+                gate.acquire()
             r = selector.execute(inputs)
-            return key, r.success, r.error, r.cost_usd, (r.data or {}).get("status")
+            return plan, key, r.success, r.error, r.cost_usd, (r.data or {}).get("status")
         except Exception as exc:
-            return key, False, repr(exc)[:300], 0, None
+            return plan, key, False, repr(exc)[:300], 0, None
+        finally:
+            if gate:
+                gate.release()
 
-    workers = args.workers or (6 if args.stage == "frames" else 3)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        rows = list(pool.map(run, jobs.items()))
+    with ThreadPoolExecutor(max_workers=max(1, len(work))) as pool:
+        rows = list(pool.map(run, work))
 
     failed = 0
-    for key, ok, err, cost, status in rows:
+    for plan, key, ok, err, cost, status in rows:
+        entry = entries[(plan["project"], key)]
         if ok:
-            tracker.reconcile(entries[key], cost or jobs[key][1], True)
+            plan["tracker"].reconcile(entry, cost or plan["jobs"][key][1], True)
         else:
-            tracker.refund(entries[key])
+            plan["tracker"].refund(entry)
             failed += 1
-        print(key, "ok" if ok else "FAILED", status or "", str(err or "")[:200])
-    if args.stage == "frames" and aspect == "9:16":
-        for key in jobs:
-            w, h = size_of(proj / "assets/images" / f"{key}.png")
-            if h and abs(w / h - 9 / 16) > 0.01:
-                print(f"{key}: returned {w}x{h}, not 9:16. Keep the original and ask before cropping.")
-    print(tracker.cost_snapshot())
+        print(f"{plan['project']}/{key}", "ok" if ok else "FAILED", status or "", str(err or "")[:200])
+    for plan in plans:
+        if args.stage == "frames" and plan["aspect"] == "9:16":
+            for key in plan["jobs"]:
+                w, h = size_of(plan["proj"] / "assets/images" / f"{key}.png")
+                if h and abs(w / h - 9 / 16) > 0.01:
+                    print(f"{plan['project']}/{key}: returned {w}x{h}, not 9:16. Keep the original and ask before cropping.")
+        print(plan["project"], plan["tracker"].cost_snapshot())
     sys.exit(1 if failed else 0)
 
 

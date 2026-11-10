@@ -39,8 +39,8 @@ description: >-
 
 1. **看素材：** 读完用户给的全部脚本、图片和参考视频（抽帧、测时长和切点）。只有模糊要求时按 `skills/meta/creative-intake.md` 的 “Handling Open, Media-Led Briefs” 自己推断，最多问一个阻塞问题。
 2. **提案：** 一次列清镜头表、费用、分辨率、配音方案和需要用户决定的默认项。用户已给完整脚本或分镜时，脚本和分镜随提案一起批准，不再逐阶段确认。
-3. **样片：** 第一次付费前展示 `dry_run`。有人物对白或新的语言时，先生成 2–3 段样片交用户试听，通过后再批量。
-4. **批量生成：** 把镜头写成 spec，用 `scripts/batch_generate.py`：先生成首帧并逐张检查，再生成视频（`--dry-run` 可预览）。它已处理费用记录、并发上限和跳过已有文件。
+3. **样片：** 第一次付费前展示 `dry_run`。没有方法卡、又有人物对白或新的语言时，先生成 2–3 段样片交用户试听，通过后再批量。按已就绪的方法卡批量时不单做样片，所有条目同步推进（`references/batch.md` 3.1）。
+4. **批量生成：** 把镜头写成 spec，用 `scripts/batch_generate.py`：先生成首帧并逐张检查，再生成视频（`--dry-run` 可预览）。它已处理费用记录、并发提交和跳过已有文件；多条片子用 `--project v1 v2 v3` 一次并发跑完。
 5. **检查：** 用 `scripts/qc_media.py <目录> --sheets <目录>` 测尺寸、解码、切镜和有声区间，再看抽帧表。偏差如实报告，由用户决定。
 6. **素材确认：** 把原片首尾相接的试听版交给用户，确认后才合成。
 7. **合成：** 按 `references/compose.md` 用 `scripts/assemble.py` 和 `hyperframes_compose`，成片放 `projects/<id>/renders/final.mp4`，保留原片。

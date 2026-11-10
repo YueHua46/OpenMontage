@@ -110,6 +110,8 @@ def main():
             init_project(pid, title=f"{master['name']} {vid}", pipeline_type="cinematic")
         (proj / "shots.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
         print("ready", proj / "shots.json")
+    ids = " ".join(f"{master['name']}-{vid}" for vid in specs)
+    print(f"All versions run together: batch_generate.py --project {ids} --stage frames (then --stage videos)")
 
 
 if __name__ == "__main__":

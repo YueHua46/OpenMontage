@@ -81,6 +81,6 @@ Fish Audio 是团队默认配音渠道，密钥在本机仓库 `.env`。默认�
 
 提示词要点（实测）：视频提示词必须描述首帧的实际构图，不能要求与首帧不同的景别；首帧是完整产品而提示词写“特写”时，模型在 1.17 秒处自行硬切，特写中产品天线消失。结尾写明 one continuous take、no cuts、no sudden zoom 后，同一镜头未再检出切镜。批量后用 ffmpeg `select='gt(scene,0.2)'` 检查切镜。
 
-并发（实测）：同时提交 7 段时，4 段成功，3 段返回 `The generation service is busy`。视频并发上限先按 3 执行；失败重试属于新的付费提交，需用户批准并传 `confirm_resubmit: true`。`gpt-image-2` 并发 12 张（6 路）未被限流，但可能忽略 9:16，实测文生图和图生图都返回过其他比例（1024×1536、1458×1536），出图后要核对尺寸，再做视频。
+并发（2026-11-05 实测）：同时提交 7 段时，4 段成功，3 段返回 `The generation service is busy`。批量脚本默认把所有镜头一次并发提交；某个渠道再出现 busy 时，在该模型配置的 `limits` 里加 `max_concurrent: <数量>` 限流（或临时传 `--workers`）。失败重试属于新的付费提交，需用户批准并传 `confirm_resubmit: true`。`gpt-image-2` 并发 12 张（6 路）未被限流，但可能忽略 9:16，实测文生图和图生图都返回过其他比例（1024×1536、1458×1536），出图后要核对尺寸，再做视频。
 
 工具将素材映射为 `input.media[]` 的 `first_frame` / `last_frame` / `reference_image`，并为每次任务持久化独立的 `Idempotency-Key`。整个请求（包括 Base64）不超过 1 MiB。两个分辨率按各自 `per_second_by_resolution` 费率估算，不混用报价。区分文档声明、本地契约测试通过和逐模式真实生成通过，未实测的模式不得写成已实测。
