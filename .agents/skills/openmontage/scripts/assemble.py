@@ -17,6 +17,10 @@ Edit file, with times in seconds of the source clip:
   "overlay_html": "overlay.html", "overlay_js": "overlay.js"
 }
 An "insert" is a screen drawn by the overlay, with no clip behind it; the clip's audio keeps playing under it.
+A segment with "fit": "contain" is scaled whole into the frame on black (e.g. a square CCTV shot in 9:16)
+instead of the default cover-and-crop. "mute": true drops a segment's own sound; "clip_audio": false mutes all.
+Narration files: "voiceover": [{"file": "assets/audio/vo1.mp3", "at": "<label>", "offset": 0.05, "tempo": 1.0}]
+(paths relative to the project; tempo changes speech speed only, without pitch change).
 Overlay files may use {{total}}, {{<id>.start}}, {{<id>.duration}}, {{<id>.end}} and {{<id>.start+0.5}}.
 This never alters generated pixels beyond trimming and scaling to the output size.
 """
@@ -73,8 +77,10 @@ def main():
         if "clip" in seg:
             d = q(seg["out"] - seg["in"])
             name = f"p{n:02d}_{seg['clip']}.mp4"
-            pictures.append({"name": name, "clip": seg["clip"], "in": seg["in"], "duration": d, "start": t})
-            sounds.append({"clip": seg["clip"], "in": seg.get("audio_in", seg["in"]), "out": seg.get("audio_out", seg["out"]), "at": t, "role": seg.get("role", "voice")})
+            pictures.append({"name": name, "clip": seg["clip"], "in": seg["in"], "duration": d, "start": t,
+                             "fit": seg.get("fit", "cover")})
+            if edit.get("clip_audio", True) and not seg.get("mute"):
+                sounds.append({"clip": seg["clip"], "in": seg.get("audio_in", seg["in"]), "out": seg.get("audio_out", seg["out"]), "at": t, "role": seg.get("role", "voice")})
             marks.setdefault(seg.get("label", seg["clip"]), {"start": t, "duration": d})
             t = q(t + d)
         if "insert" in seg:
@@ -88,8 +94,10 @@ def main():
     marks["total"] = {"start": 0, "duration": total}
 
     for p in pictures:
+        fit = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black"
+               if p["fit"] == "contain" else f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}")
         ff("-ss", p["in"], "-i", source / f"{p['clip']}.mp4", "-t", p["duration"], "-an", "-vf",
-           f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps={FPS},format=yuv420p", "-c:v", "libx264", "-crf", 15, "-preset", "fast", assets / p["name"])
+           f"{fit},fps={FPS},format=yuv420p", "-c:v", "libx264", "-crf", 15, "-preset", "fast", assets / p["name"])
 
     tracks = []
     for k, s in enumerate(sounds):
@@ -105,6 +113,17 @@ def main():
         out = temp / f"x{k:02d}.wav"
         ff("-ss", x["in"], "-t", round(x["out"] - x["in"], 3), "-i", path, "-vn", "-af", chain, "-ar", 48000, "-ac", 2, out)
         tracks.append({"path": str(out), "role": "sfx", "volume": 1.0, "start_seconds": marks[x["at"]]["start"] + x.get("offset", 0)})
+    for k, v in enumerate(edit.get("voiceover", [])):
+        path = proj / v["file"]
+        tempo = float(v.get("tempo", 1.0))
+        out = temp / f"vo{k:02d}.wav"
+        chain = (f"atempo={tempo}," if tempo != 1.0 else "")
+        ff("-i", path, "-vn", "-af", chain + "anull", "-ar", 48000, "-ac", 2, out)
+        gain = max(-14, min(10, args.speech_lufs - lufs(out, 0, 600)))
+        final = temp / f"vo{k:02d}_g.wav"
+        ff("-i", out, "-af", f"volume={gain:.1f}dB", final)
+        tracks.append({"path": str(final), "role": "primary", "volume": 1.0,
+                       "start_seconds": marks[v["at"]]["start"] + v.get("offset", 0), "fade_in_seconds": 0.02, "fade_out_seconds": 0.05})
 
     registry.discover()
     raw = temp / "mix_raw.wav"

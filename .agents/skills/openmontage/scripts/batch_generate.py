@@ -18,10 +18,16 @@ Spec (paths relative to the project folder unless absolute):
             "video_prompt": "...", "take": 1, "frame_take": 1, "video_inputs": {"last_frame_path": "same"}}]}
 
 - A shot with no refs uses text-to-image.
+- A shot can set "video_tool" and "resolution" to move just that shot to another approved provider
+  (its limits differ, e.g. MiniMax H3 is 768P and 4-15 s). Generate it in its own --only run.
+- "kind": "reference" marks a still other shots build on (character sheet, room plate); it needs no
+  video_prompt and is skipped at --stage videos. Other shots name it in refs as "@<id>", which always
+  means its current frame take.
 - take N > 1 writes assets/video/<id>-takeN.mp4 (frame_take likewise for frames), so earlier takes are kept.
   review_shots.py retake bumps these numbers; do not overwrite an earlier take.
 - video_inputs (spec level, then shot level) is merged into the video tool inputs, e.g. extra_params,
-  last_frame_path ("same" = the shot's first frame), reference_image_paths, operation.
+  last_frame_path ("same" = the shot's first frame, "@<id>" = a reference shot's current frame, e.g. an
+  end pose), reference_image_paths, operation.
 - Resolution, aspect ratio and price come from the tool's relay config, so any configured model works.
 Existing outputs are skipped. --resubmit is a new paid attempt and needs user approval.
 """
@@ -91,17 +97,30 @@ def check_limits(tool, resolution, aspect_ratio):
         sys.exit(f"{tool.name} does not list aspect ratio {aspect_ratio}; configured: {ratios}")
 
 
-def resolve(proj, value):
+def resolve(proj, value, spec=None):
+    """A path relative to the project, or "@<shot id>" for that shot's current first frame
+    (its latest frame_take), so shots that use a reference shot follow its retakes."""
+    if spec is not None and isinstance(value, str) and value.startswith("@"):
+        sid = value[1:]
+        for s in spec["shots"]:
+            if s["id"] == sid:
+                return str(frame_file(proj, s))
+        sys.exit(f"ref {value}: no shot {sid} in the spec")
     return value if Path(value).is_absolute() else str(proj / value)
+
+
+def is_reference(shot):
+    """Reference shots (character sheet, room plate) are stills other shots build on; they get no video."""
+    return shot.get("kind") == "reference"
 
 
 def video_extra(proj, spec, shot, frame):
     merged = {**spec.get("video_inputs", {}), **shot.get("video_inputs", {})}
     for key, value in list(merged.items()):
         if key.endswith("_path") and isinstance(value, str):
-            merged[key] = str(frame) if value == "same" else resolve(proj, value)
+            merged[key] = str(frame) if value == "same" else resolve(proj, value, spec)
         elif key.endswith("_paths") and isinstance(value, list):
-            merged[key] = [str(frame) if v == "same" else resolve(proj, v) for v in value]
+            merged[key] = [str(frame) if v == "same" else resolve(proj, v, spec) for v in value]
     return merged
 
 
@@ -115,17 +134,26 @@ def plan_project(args, project, spec_path):
         sys.exit(f"{project}: spec not found: {spec_path}")
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     image_tool_name = args.image_tool or spec.get("image_tool") or default_tool("image", FALLBACK_IMAGE_TOOL)
-    video_tool_name = args.video_tool or spec.get("video_tool") or default_tool("video", FALLBACK_VIDEO_TOOL)
     aspect = spec.get("aspect_ratio", "9:16")
     resolution = spec.get("resolution")
     shots = [s for s in spec["shots"] if not args.only or s["id"] in args.only]
+    if args.stage == "videos":
+        shots = [s for s in shots if not is_reference(s)]
+    # A shot may name its own video_tool and resolution (one shot moved to another approved provider).
+    # One run uses one tool, so shots on different tools are generated in separate --only runs.
+    own_tools = {s["video_tool"] for s in shots if s.get("video_tool")} if args.stage == "videos" else set()
+    if len(own_tools) > 1 or (own_tools and any(not s.get("video_tool") for s in shots)):
+        sys.exit(f"{project}: the selected shots use different video tools {sorted(own_tools)}; run each group with --only.")
+    video_tool_name = (args.video_tool or next(iter(own_tools), None) or spec.get("video_tool")
+                       or default_tool("video", FALLBACK_VIDEO_TOOL))
     (proj / "assets/images").mkdir(parents=True, exist_ok=True)
     (proj / "assets/video").mkdir(parents=True, exist_ok=True)
 
     tool_name = image_tool_name if args.stage == "frames" else video_tool_name
     tool = get_tool(tool_name)
     if args.stage == "videos":
-        check_limits(tool, resolution, aspect)
+        for s in shots:
+            check_limits(tool, s.get("resolution", resolution), s.get("video_inputs", {}).get("aspect_ratio", aspect))
 
     # First-frame gate: when the spec has acceptance checks, a video is only made from a frame that
     # review_shots.py marked pass. Frames are cheap; most defects (phone reversed, extra device) start there.
@@ -142,10 +170,11 @@ def plan_project(args, project, spec_path):
         frame = frame_file(proj, s)
         if args.stage == "frames":
             out = frame
-            refs = [resolve(proj, r) for r in s.get("refs", [])]
+            refs = [resolve(proj, r, spec) for r in s.get("refs", [])]
             missing = [r for r in refs if not Path(r).exists()]
             if missing:
-                sys.exit(f"{project}/{sid}: missing refs {missing}")
+                sys.exit(f"{project}/{sid}: missing refs {missing}. Generate and review reference shots first "
+                         f"(--only <their ids>), then the shots that use them.")
             inputs = {"preferred_tool": tool_name, "generation_mode": "edit" if refs else "generate", "aspect_ratio": aspect,
                       "output_path": str(out), "scene_id": sid, "prompt": s["frame_prompt"]}
             if refs:
@@ -161,9 +190,13 @@ def plan_project(args, project, spec_path):
                     continue
             inputs = {"preferred_tool": tool_name, "operation": "image_to_video", "reference_image_path": str(frame), "duration": s["duration"],
                       "aspect_ratio": aspect, "output_path": str(out), "scene_id": sid, "prompt": s["video_prompt"]}
-            if resolution:
-                inputs["resolution"] = resolution
+            if s.get("resolution", resolution):
+                inputs["resolution"] = s.get("resolution", resolution)
             inputs.update(video_extra(proj, spec, s, frame))
+            lost = [v for k, v in inputs.items() if k.endswith("_path") and k != "output_path" and isinstance(v, str)
+                    and not Path(v).exists()]
+            if lost and not args.dry_run:
+                sys.exit(f"{project}/{sid}: missing video input files {lost}; generate and review them first.")
         if out.exists() and not args.resubmit and not args.dry_run:
             print(f"{project}/{out.stem}: already exists, skipped")
             continue

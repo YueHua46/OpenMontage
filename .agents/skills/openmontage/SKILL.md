@@ -15,7 +15,7 @@ description: >-
 ## 开工前
 
 1. 运行 `python <SKILL>/scripts/doctor.py`。不是 `READY` 就把缺项原样告诉用户并停下；缺密钥时让用户自己写入仓库 `.env`，不要让用户把密钥发到对话里，绝不打印密钥值。
-2. 读仓库 `AGENT_GUIDE.md`（强制），再读 `.agents/skills/relay-providers/SKILL.md`、`skills/core/relay-providers.md`，以及本技能 `references/providers.md`。合成前读 `references/compose.md`。
+2. 读仓库 `AGENT_GUIDE.md`（强制），再读 `.agents/skills/relay-providers/SKILL.md`、`skills/core/relay-providers.md`，以及本技能 `references/providers.md`。写提示词前读 `references/failure-modes.md` 和所选风格模板（`references/styles/`），合成前读 `references/compose.md`。
 3. 运行 `<PY> -m tools.relay route` 确认默认渠道。接入或切换渠道按 `references/providers.md` 处理，不启动成片流水线或付费测试。
 
 ## 更新
@@ -40,7 +40,7 @@ description: >-
 走 `cinematic` 流水线（Rule Zero），用 `lib.checkpoint` 写检查点，遵守审批闸门。
 
 1. **看素材：** 读完用户给的全部脚本、图片和参考视频（抽帧、测时长和切点）。图片和视频帧先用 `scripts/preview.py` 转成小图再看（见下文“看图”）。只有模糊要求时按 `skills/meta/creative-intake.md` 的 “Handling Open, Media-Led Briefs” 自己推断，最多问一个阻塞问题。
-2. **提案：** 一次列清镜头表、费用、分辨率、配音方案和需要用户决定的默认项。用户已给完整脚本或分镜时，脚本和分镜随提案一起批准，不再逐阶段确认。带货、转化广告默认按 `references/batch.md` 1.0 的“钩子 → 痛点 → 方案 → 证明 → 下单引导”结构写，用户另有结构时按用户的。
+2. **提案：** 一次列清镜头表、费用、分辨率、配音方案和需要用户决定的默认项。用户已给完整脚本或分镜时，脚本和分镜随提案一起批准，不再逐阶段确认。带货、转化广告默认按 `references/batch.md` 1.0 的“钩子 → 痛点 → 方案 → 证明 → 下单引导”结构写，用户另有结构时按用户的。按用户要的观感从 `references/styles/` 选风格模板（例如 TK 引流、要像真人实拍时用 `tiktok-ugc.md`），在提案里说明选了哪个；没有合适的模板就按用户描述写，不硬套。
 3. **样片：** 第一次付费前展示 `dry_run`。没有方法卡、又有人物对白或新的语言时，先生成 2–3 段样片交用户试听，通过后再批量。按已就绪的方法卡批量时不单做样片，所有条目同步推进（`references/batch.md` 3.1）。
 4. **批量生成：** 把镜头写成 spec，用 `scripts/batch_generate.py`：先生成首帧并逐张检查，再生成视频（`--dry-run` 可预览）。它已处理费用记录、并发提交和跳过已有文件；多条片子用 `--project v1 v2 v3` 一次并发跑完。
 5. **检查：** 用 `scripts/qc_media.py <目录> --sheets <目录>` 测尺寸、解码、切镜和有声区间，再看抽帧表。偏差如实报告，由用户决定。
@@ -50,7 +50,9 @@ description: >-
 
 第 2、3、6 步必须停下等用户确认，不要一口气跑完：用户不满意时，后面的费用就白花了。首帧有明显问题时也先报告，再生成对应视频。
 
-第 4、5 步按 `references/batch.md` 第 1 节走验收闭环，审查员是你自己：生成前按 10 个类别推出每个镜头的验收规则（不只是用户举的例子），首帧先审再出视频；用 `scripts/review_shots.py` 出放大的抽帧页，先写客观观察再逐条对照，清单外的问题同样判不通过并补成新规则；不通过的镜头改输入后有限次重生成，旧版保留。首帧画的是镜头动作开始前一刻的状态，不是动作的结果（`references/batch.md` 1.1）。
+第 4、5 步按 `references/batch.md` 第 1 节走验收闭环，审查员是你自己：同一人物或场景出现在多个镜头时，先出参考图（`"kind": "reference"`）并经用户确认，分镜用 `@id` 引用它（`references/batch.md` 1.15）；生成前按 12 个类别（含跨镜连贯 `continuity` 和符合风格模板的观感 `realism`）推出每个镜头的验收规则（不只是用户举的例子），首帧先审再出视频；用 `scripts/review_shots.py` 出放大的抽帧页，先写客观观察再逐条对照，清单外的问题同样判不通过并补成新规则；不通过的镜头改输入后有限次重生成，旧版保留。首帧是镜头动作的起点，不是动作的结果（`references/batch.md` 1.1）；视频提示词按 1.16 写，让动作按真实速度发生。
+
+**写首帧和视频提示词之前，读 `references/failure-modes.md`；审每张首帧、每段视频时按它逐条对照。** 里面是真实项目里被用户一眼看穿的问题：产品像 P 上去的、遮挡反了、被挡住的产品在视频里消失、人物换脸、摔倒演成坐下、东西悬在空中、按错部位、运镜让产品变形、字幕挡住产品等，每条都写了原因、预防和发现方法。遇到新的失败模式时补进去。动作镜头必须按每秒 6 帧逐帧看动作时段，判断标准是“观众按正常速度看一眼像不像”，而不是几张图的先后顺序对不对。
 
 **付费生成只走 `batch_generate.py`，重生成只走 `review_shots.py retake` + `batch_generate.py --only`。** 不要用 `registry.get(...).execute()`、`python -c` 或自写脚本直接调生成工具：那样不进 `cost_log.json`，绕开预算、重生成次数和首帧闸门，版本命名也和 `review.json` 对不上。直接调工具只用于 `dry_run` 查看请求。预算或次数不够时，先问用户，再改 spec 的 `budget_usd` / `max_retakes`。用户授权“有问题自己重做”，同样走这条路径。多个镜头要重做时一起 `retake`，再用一次 `--only a b c` 并发提交，不要一张一张串行跑。
 

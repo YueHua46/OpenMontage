@@ -9,6 +9,8 @@ Run from the OpenMontage repo with its venv (paid generation still goes through 
          --observed "what the images show" --ok rest --failed <ids> [--new-check motion:"..."]
   python -X utf8 <S>/review_shots.py retake --project <id> --spec shots.json a1 --reason "..." --prompt-file f.txt [--new-frame --frame-prompt-file g.txt]
   python -X utf8 <S>/review_shots.py status --project <id> --spec shots.json
+  python -X utf8 <S>/review_shots.py accept --project <id> --spec shots.json a1 --take 4 --use 0-1.6 --note "user: ..."
+         (only on the user's decision: selects a failed take, keeps the fail verdict on record)
 
 Spec fields used:
   "checks"            rules for every shot: {"id", "category", "text"}
@@ -16,6 +18,9 @@ Spec fields used:
   shot "na"           {"category": "why it does not apply to this shot"}
   shot "regions"      {"name": [x, y, w, h]} fractions of the frame to zoom into: the phone screen, the
                       product, parts that must stay still, hands. Every sampled frame is cropped and enlarged.
+                      {"name": {"box": [...], "ref": "@m-elder", "ref_box": [...]}} puts the same part of a
+                      reference image first in the strip (labelled REF), e.g. the character sheet's face.
+  shot "kind": "reference"  a still other shots build on (character sheet, room plate): frames only.
   shot "dialogue", "purpose", spec "max_retakes" (paid retakes per shot after take 1, default 2)
 
 The script only makes the evidence big enough to see (dense pages, enlarged regions, ASR text) and
@@ -33,7 +38,7 @@ import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from batch_generate import frame_file, take_name  # noqa: E402
+from batch_generate import frame_file, is_reference, resolve, take_name  # noqa: E402
 
 # Every shot must answer each category with a check or a reason in "na". The categories are generic,
 # so defects nobody listed in advance still get looked at.
@@ -48,6 +53,10 @@ CATEGORIES = {
     "people": "same identity and clothes; hands, fingers, limbs and faces are natural",
     "action": "the scripted action happens, in order, within the shot",
     "audio": "dialogue, language and sound; the agent cannot hear, so ASR plus the user",
+    "continuity": "same person (face, age, hair, clothes), same room and the same furniture and prop positions as the "
+                  "reference shots and neighbouring shots; distances the story relies on still hold",
+    "realism": "the look matches the chosen style template (references/styles/), e.g. phone footage of a real home for "
+               "UGC ads; no unintended AI look: plastic skin, posed bodies, showroom-perfect rooms, render-like products",
 }
 FPS = 3
 TILE_W = 480
@@ -85,7 +94,8 @@ VIDEO_ONLY = {"motion", "action", "audio"}  # a still first frame cannot show th
 
 def checks_for(spec, shot, stage="videos"):
     checks = norm_checks(spec.get("checks")) + norm_checks(shot.get("checks"))
-    return [c for c in checks if stage == "videos" or c.get("category") not in VIDEO_ONLY]
+    still = stage != "videos" or is_reference(shot)
+    return [c for c in checks if not still or c.get("category") not in VIDEO_ONLY]
 
 
 def takes_on_disk(proj, sid):
@@ -219,11 +229,27 @@ def pages(frames, out_prefix, cols=3, rows=2, width=TILE_W):
     return made
 
 
-def strip(frames, frac, out, height=360, per_row=6):
-    """One region cropped from every sampled frame and enlarged, so small details are readable."""
+def region_spec(value):
+    """A region is [x, y, w, h], or {"box": [...], "ref": "@shot or path", "ref_box": [...]} to put the
+    same part of a reference image (e.g. the character sheet's face) first in the strip for comparison."""
+    if isinstance(value, dict):
+        return value["box"], value.get("ref"), value.get("ref_box") or value["box"]
+    return value, None, None
+
+
+def strip(frames, frac, out, height=360, per_row=6, ref=None):
+    """One region cropped from every sampled frame and enlarged, so small details are readable.
+    `ref` = (image path, box): that crop comes first, labelled REF, for identity and layout checks."""
     from PIL import Image, ImageDraw
 
     crops = []
+    if ref and Path(ref[0]).exists():
+        im = Image.open(ref[0]).convert("RGB")
+        c = im.crop(box(ref[1], im.width, im.height))
+        c = c.resize((max(1, int(c.width * height / max(1, c.height))), height))
+        ImageDraw.Draw(c).rectangle((0, 0, 44, 20), fill="red")
+        ImageDraw.Draw(c).text((4, 4), "REF", fill="white")
+        crops.append(c)
     for t, p in frames:
         im = Image.open(p).convert("RGB")
         c = im.crop(box(frac, im.width, im.height))
@@ -233,6 +259,7 @@ def strip(frames, frac, out, height=360, per_row=6):
     if not crops:
         return None
     w = max(c.width for c in crops)
+    per_row = min(per_row, len(crops))  # a still frame gives one or two crops; no empty columns
     rows = (len(crops) + per_row - 1) // per_row
     sheet = Image.new("RGB", (per_row * w, rows * height), "#222")
     for n, c in enumerate(crops):
@@ -257,7 +284,8 @@ def cmd_lint(r, args):
         ids += [c["id"] for c in own]
         bad = [c["id"] for c in own if c.get("category") not in CATEGORIES]
         covered = {c["category"] for c in globals_ + own} | set(s.get("na", {}))
-        missing = [k for k in CATEGORIES if k not in covered]
+        needed = [k for k in CATEGORIES if not (is_reference(s) and k in VIDEO_ONLY)]
+        missing = [k for k in needed if k not in covered]
         if bad or missing:
             problems += 1
             print(f"{s['id']} ({s.get('purpose', '')}):")
@@ -265,7 +293,7 @@ def cmd_lint(r, args):
                 print("  checks without a valid category:", bad)
             for k in missing:
                 print(f"  no check or na reason for {k}: {CATEGORIES[k]}")
-        if not any(c["category"] == "motion" for c in own) and "motion" not in s.get("na", {}):
+        if not is_reference(s) and not any(c["category"] == "motion" for c in own) and "motion" not in s.get("na", {}):
             print(f"{s['id']}: no shot-level motion rule; say which parts move and which must stay still")
     dup = sorted({i for i in ids if ids.count(i) > 1})
     if dup:
@@ -278,10 +306,15 @@ def cmd_lint(r, args):
 
 def cmd_sheet(r, args):
     stage = args.stage
+    if stage == "videos" and args.fps < FPS:
+        print(f"WARNING: {args.fps} fps is below the default {FPS}. Gaps this wide hide how an action moves "
+              f"(a slow sit-down looks like a fall); do not pass motion or action checks from these pages.")
     for s in r.spec["shots"]:
         sid = s["id"]
         if args.only and sid not in args.only:
             continue
+        if stage == "videos" and is_reference(s):
+            continue  # reference stills are reviewed with --stage frames
         n, item = r.latest(sid, stage)
         if args.take:  # an earlier take, e.g. to review an existing project or compare versions
             n = str(args.take)
@@ -302,8 +335,13 @@ def cmd_sheet(r, args):
             evidence["pages"] = pages(frames, folder / "page")
             evidence["duration"] = frames[-1][0] if frames else 0
         folder.mkdir(parents=True, exist_ok=True)
-        for name, frac in s.get("regions", {}).items():
-            evidence["regions"][name] = strip(frames, frac, folder / f"region_{name}.jpg")
+        for name, value in s.get("regions", {}).items():
+            frac, ref, ref_box = region_spec(value)
+            ref_img = resolve(r.proj, ref, r.spec) if ref else None
+            if ref_img and Path(ref_img).resolve() == Path(item["file"]).resolve():
+                ref_img = None  # the reference shot itself
+            evidence["regions"][name] = strip(frames, frac, folder / f"region_{name}.jpg",
+                                              ref=(ref_img, ref_box) if ref_img else None)
         if stage == "videos" and s.get("dialogue") and args.lang:
             heard = transcribe(item["file"], args.lang)
             evidence["asr"] = None if heard is None else {
@@ -408,7 +446,7 @@ def cmd_retake(r, args):
         sys.exit(f"{args.shot}: no video yet; for a failed first frame use --new-frame")
     elif take["verdict"] != "fail":
         sys.exit(f"{take['clip']} is {take['verdict']}; mark it fail with the defect before a retake")
-    used = len(rec["takes"]) - 1 + max(0, len(rec["frames"]) - 1)
+    used = len(rec.get("retakes", []))  # one retake = one decision to regenerate (frame, video or both)
     if used >= r.max_retakes:
         rec["status"] = "awaiting_human_review"
         r.save()
@@ -429,9 +467,36 @@ def cmd_retake(r, args):
                                           "reason": args.reason, "prompt_changed": bool(args.prompt_file), "new_frame": bool(args.new_frame), "at": now()})
     dump(r.spec_path, r.spec)
     r.save()
-    nxt = "--stage frames, review the new frame, then --stage videos" if args.new_frame else "--stage videos"
-    print(f"{args.shot}: next is {take_name(args.shot, shot.get('take', 1))} ({used + 1}/{r.max_retakes} retakes). "
+    if args.new_frame:
+        nxt = "--stage frames, then review the new frame" + ("" if is_reference(shot) else " before --stage videos")
+        name = take_name(args.shot, shot.get("frame_take", 1))
+    else:
+        nxt, name = "--stage videos", take_name(args.shot, shot.get("take", 1))
+    print(f"{args.shot}: next is {name} ({used + 1}/{r.max_retakes} retakes). "
           f"Run batch_generate.py {nxt} --only {args.shot}; earlier takes stay on disk.")
+
+
+def cmd_accept(r, args):
+    """The user decides to use a take the review failed (e.g. only part of it). The fail verdict and its failed
+    checks stay on record; only the selection and the user's decision are added. The agent never calls this
+    on its own judgement."""
+    rec = r.data["shots"][args.shot]
+    n = str(args.take) if args.take else r.latest(args.shot)[0]
+    if not n or n not in rec["takes"]:
+        sys.exit(f"{args.shot}: video take {n} not found")
+    take = rec["takes"][n]
+    if not args.note or len(args.note.strip()) < 10:
+        sys.exit("--note is required: quote the user's decision and how the take is used (e.g. trimmed range)")
+    use = None
+    if args.use:
+        a, b = (float(x) for x in args.use.split("-"))
+        use = [a, b]
+    take["user_accepted"] = {"note": args.note, "use_seconds": use, "at": now(), "verdict_kept": take.get("verdict"),
+                             "failed_checks": take.get("failed_checks", [])}
+    rec["selected"] = take["clip"]
+    r.save()
+    print(f"{take['clip']}: selected as accepted by the user (review verdict stays {take.get('verdict')})"
+          + (f", use {use[0]}-{use[1]} s" if use else ""))
 
 
 def cmd_status(r, args):
@@ -441,10 +506,16 @@ def cmd_status(r, args):
         rec = r.data["shots"][sid]
         n, latest = r.latest(sid)
         _, frame = r.latest(sid, "frames")
-        used = len(rec["takes"]) - 1 + max(0, len(rec["frames"]) - 1)
+        if is_reference(s):
+            rows.append({"shot": sid, "purpose": s.get("purpose", ""), "kind": "reference",
+                         "frame": frame["verdict"] if frame else "none", "frame_take": s.get("frame_take", 1)})
+            continue
+        used = len(rec.get("retakes", []))  # one retake = one decision to regenerate (frame, video or both)
         rows.append({"shot": sid, "purpose": s.get("purpose", ""), "frame": frame["verdict"] if frame else "none",
                      "takes": len(rec["takes"]), "latest": n, "verdict": latest["verdict"] if latest else "no take",
-                     "retakes_left": max(0, r.max_retakes - used), "selected": rec.get("selected"), "status": rec.get("status")})
+                     "retakes_left": max(0, r.max_retakes - used), "selected": rec.get("selected"), "status": rec.get("status"),
+                     "user_accepted": next((t["user_accepted"] for t in rec["takes"].values()
+                                            if t.get("clip") == rec.get("selected") and t.get("user_accepted")), None)})
         (clips if rec.get("selected") else unresolved).append(rec.get("selected") or sid)
     print(json.dumps(rows, ensure_ascii=False, indent=1))
     print("Accepted clips for edit.json:", clips)
@@ -456,7 +527,7 @@ def cmd_status(r, args):
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("lint", "status", "sheet", "mark", "retake"):
+    for name in ("lint", "status", "sheet", "mark", "retake", "accept"):
         p = sub.add_parser(name)
         p.add_argument("--project", required=True)
         p.add_argument("--spec", required=True)
@@ -466,10 +537,13 @@ def main():
             p.add_argument("--only", nargs="*")
             p.add_argument("--lang", help="dialogue language for the ASR check, e.g. es, en, zh")
             p.add_argument("--fps", type=float, default=FPS, help="sampled frames per second (default 3)")
-        if name in ("sheet", "mark"):
+        if name in ("sheet", "mark", "accept"):
             p.add_argument("--take", type=int, help="a specific take instead of the latest")
-        if name in ("mark", "retake"):
+        if name in ("mark", "retake", "accept"):
             p.add_argument("shot")
+        if name == "accept":
+            p.add_argument("--note", help="the user's decision, quoted, and how the take is used")
+            p.add_argument("--use", help="seconds of the take to use, e.g. 0-1.6")
         if name == "mark":
             p.add_argument("--verdict", choices=("pass", "fail"), required=True)
             p.add_argument("--observed", help="what the images show, written before reading the checks")
@@ -486,7 +560,8 @@ def main():
             p.add_argument("--frame-prompt-file")
     args = ap.parse_args()
     r = Review(args.project, args.spec)
-    {"lint": cmd_lint, "status": cmd_status, "sheet": cmd_sheet, "mark": cmd_mark, "retake": cmd_retake}[args.cmd](r, args)
+    {"lint": cmd_lint, "status": cmd_status, "sheet": cmd_sheet, "mark": cmd_mark, "retake": cmd_retake,
+     "accept": cmd_accept}[args.cmd](r, args)
 
 
 if __name__ == "__main__":
