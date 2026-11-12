@@ -130,7 +130,13 @@ def main():
     r = registry.get("audio_mixer").execute({"operation": "mix", "tracks": tracks, "output_path": str(raw), "normalize": False})
     if not r.success:
         sys.exit(f"audio_mixer failed: {r.error}")
-    ff("-i", raw, "-af", f"apad,atrim=0:{total},loudnorm=I={args.target_lufs}:TP=-2:LRA=11,alimiter=limit=0.84:level=false,aresample=48000", "-c:a", "pcm_s16le", assets / "mix.wav")
+    # Two-pass loudness: measure the whole mix, then one static gain plus a peak limiter. Single-pass
+    # loudnorm undershoots when narration has pauses and a silent tail (measured -17 LUFS for a -15.5 target).
+    gain = args.target_lufs - lufs(raw, 0, total)
+    # Limit at about -2 dBFS: AAC encoding adds a few tenths of a dB, and the delivery check is peak <= -1.5 dBFS.
+    ff("-i", raw, "-af", f"apad,atrim=0:{total},volume={gain:.2f}dB,alimiter=limit=0.79:level=false,aresample=48000",
+       "-c:a", "pcm_s16le", assets / "mix.wav")
+    print(f"mix loudness: {lufs(assets / 'mix.wav', 0, total):.1f} LUFS (target {args.target_lufs})", file=sys.stderr)
     for f in temp.glob("*.wav"):
         f.unlink()
     temp.rmdir()

@@ -16,3 +16,6 @@ uvicorn>=0.29
 watchfiles>=0.21
 
 websockets>=14.0       # Eleven v4 Turbo and realtime audio transports
+
+# Video skill review: dialogue/narration ASR, word-timed narration splitting (model downloads on first use)
+faster-whisper>=1.0

@@ -14,7 +14,7 @@ description: >-
 
 ## 开工前
 
-1. 运行 `python <SKILL>/scripts/doctor.py`。不是 `READY` 就把缺项原样告诉用户并停下；缺密钥时让用户自己写入仓库 `.env`，不要让用户把密钥发到对话里，绝不打印密钥值。
+1. 运行 `python <SKILL>/scripts/doctor.py`。缺 Python 包（Pillow、numpy、faster-whisper 等）或 ffmpeg、Node.js、git 时，直接运行 `doctor.py --fix` 安装，装完再检查，环境要齐全，不要因为缺依赖就跳过审片或切分步骤。只有缺密钥时才停下：让用户自己写入仓库 `.env`，不要让用户把密钥发到对话里，绝不打印密钥值。在 Codex 沙箱里装不上时，申请在沙箱外运行。
 2. 读仓库 `AGENT_GUIDE.md`（强制），再读 `.agents/skills/relay-providers/SKILL.md`、`skills/core/relay-providers.md`，以及本技能 `references/providers.md`。写提示词前读 `references/failure-modes.md` 和所选风格模板（`references/styles/`），合成前读 `references/compose.md`。
 3. 运行 `<PY> -m tools.relay route` 确认默认渠道。接入或切换渠道按 `references/providers.md` 处理，不启动成片流水线或付费测试。
 
@@ -52,7 +52,7 @@ description: >-
 
 第 4、5 步按 `references/batch.md` 第 1 节走验收闭环，审查员是你自己：同一人物或场景出现在多个镜头时，先出参考图（`"kind": "reference"`）并经用户确认，分镜用 `@id` 引用它（`references/batch.md` 1.15）；生成前按 12 个类别（含跨镜连贯 `continuity` 和符合风格模板的观感 `realism`）推出每个镜头的验收规则（不只是用户举的例子），首帧先审再出视频；用 `scripts/review_shots.py` 出放大的抽帧页，先写客观观察再逐条对照，清单外的问题同样判不通过并补成新规则；不通过的镜头改输入后有限次重生成，旧版保留。首帧是镜头动作的起点，不是动作的结果（`references/batch.md` 1.1）；视频提示词按 1.16 写，让动作按真实速度发生。
 
-**写首帧和视频提示词之前，读 `references/failure-modes.md`；审每张首帧、每段视频时按它逐条对照。** 里面是真实项目里被用户一眼看穿的问题：产品像 P 上去的、遮挡反了、被挡住的产品在视频里消失、人物换脸、摔倒演成坐下、东西悬在空中、按错部位、运镜让产品变形、字幕挡住产品等，每条都写了原因、预防和发现方法。遇到新的失败模式时补进去。动作镜头必须按每秒 6 帧逐帧看动作时段，判断标准是“观众按正常速度看一眼像不像”，而不是几张图的先后顺序对不对。
+**写首帧和视频提示词之前，读 `references/failure-modes.md`；审每张首帧、每段视频时按它逐条对照。** 里面是真实项目里被用户一眼看穿的问题：产品像 P 上去的、遮挡反了、被挡住的产品在视频里消失、人物换脸、摔倒演成坐下、东西悬在空中、按错部位、运镜让产品变形、字幕挡住产品等，每条都写了原因、预防和发现方法。**用户指出的每个问题、你自己发现的每个新问题，当轮就补进 `failure-modes.md`（只属于某种风格的补进对应模板），写清原因和预防方法，并告诉用户补在哪里；不要等用户提醒。** 能用脚本检查的就补进脚本（例如 `voice_check.py`、`review_shots.py` 的规则），不能只靠文字。动作镜头必须按每秒 6 帧逐帧看动作时段，判断标准是“观众按正常速度看一眼像不像”，而不是几张图的先后顺序对不对。
 
 **付费生成只走 `batch_generate.py`，重生成只走 `review_shots.py retake` + `batch_generate.py --only`。** 不要用 `registry.get(...).execute()`、`python -c` 或自写脚本直接调生成工具：那样不进 `cost_log.json`，绕开预算、重生成次数和首帧闸门，版本命名也和 `review.json` 对不上。直接调工具只用于 `dry_run` 查看请求。预算或次数不够时，先问用户，再改 spec 的 `budget_usd` / `max_retakes`。用户授权“有问题自己重做”，同样走这条路径。多个镜头要重做时一起 `retake`，再用一次 `--only a b c` 并发提交，不要一张一张串行跑。
 
@@ -83,7 +83,8 @@ Codex、Claude Code 会把你看过的每张图以 base64 留在对话历史里�
 - 汇报费用时区分配置估算与可核实的实际扣费，超过批准预算前必须先问。
 - 密钥只放在仓库 `.env` 或环境变量，不写入技能、YAML、示例、日志或交付物。
 - Agent 听不到音频：发音、声音一致性、口型和配乐听感都由用户确认，不能声称已听过。
-- 演示产品功能的 AI 画面不是实拍，提案中提醒用户是否加 “simulated” 类标注，并提醒平台的 AI 内容披露要求。脚本里的产品参数和卖点（如“免订阅”“即时接通”“2K”）来自用户，没有核实时在提案里逐条列出风险，由用户决定保留、改写或删除；不要擅自删改用户脚本里的台词和卖点。
+- 演示产品功能的 AI 画面不是实拍：默认不在画面上加 “simulated”“Dramatization” 类标注小字，提醒用户发布时打开平台的 AI 内容标签；用户要求时才加到画面里。
+- 有旁白时，Agent 自己选一个适合这条片子的声音，在提案里说明，锁进 spec 的 `voice.reference_id`；之后整片和同系列的片子都固定用它，不中途换，用户要求才换（换了要写进 decision_log）。不用不指定声音的默认声音，不用模仿名人或角色的声音；整段一次生成，用 `scripts/split_narration.py` 切分，再跑 `scripts/voice_check.py`。脚本里的产品参数和卖点（如“免订阅”“即时接通”“2K”）来自用户，没有核实时在提案里逐条列出风险，由用户决定保留、改写或删除；不要擅自删改用户脚本里的台词和卖点。
 
 ## 生成偏差的处理边界
 

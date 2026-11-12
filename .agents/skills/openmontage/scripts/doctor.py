@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Check that this machine can run the OpenMontage skill. Never prints key values.
 
-Usage: python doctor.py [--repo PATH] [--full]
+Usage: python doctor.py [--repo PATH] [--full] [--fix]
+  --fix installs missing Python packages into the repo venv, and on Windows missing ffmpeg / Node.js / git
+  with winget. API keys are never installed or printed: the user adds them to .env.
 """
 import argparse
 import json
@@ -19,6 +21,10 @@ REQUIRED_KEYS = {
     "FISH_AUDIO_API_KEY": "voiceover (Fish Audio)",
 }
 OPTIONAL_KEYS = {"TSTSTS_TEXT_API_KEY": "text helpers", "OMNIAKEY_API_KEY": "video alternative (MiniMax H3)"}
+# Python packages the skill scripts import, as {module: pip package}. --fix installs missing ones into the repo venv.
+SKILL_PACKAGES = {"PIL": "Pillow", "numpy": "numpy", "yaml": "pyyaml", "faster_whisper": "faster-whisper"}
+# System tools and their winget ids (Windows); --fix installs missing ones when winget is available.
+WINGET = {"ffmpeg": "Gyan.FFmpeg", "node": "OpenJS.NodeJS", "git": "Git.Git"}
 VIDEO_SERVICE_URL = "https://vvvvvip.tststs.shop/"  # relay of the default video model
 
 
@@ -49,6 +55,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo")
     ap.add_argument("--full", action="store_true", help="also run the HyperFrames runtime check")
+    ap.add_argument("--fix", action="store_true", help="install missing Python packages into the venv and, on Windows, "
+                                                       "missing ffmpeg / Node.js / git with winget")
     args = ap.parse_args()
     failed = []
 
@@ -65,8 +73,31 @@ def main():
     py = venv_python(repo)
     report(bool(py), f"Repo virtualenv: {py}", "python -m venv .venv, then pip install -r requirements.txt")
 
+    if py:
+        missing = []
+        for module, package in SKILL_PACKAGES.items():
+            code, _, _ = run([str(py), "-c", f"import {module}"], cwd=repo)
+            if code:
+                missing.append(package)
+        if missing and args.fix:
+            print(f"installing into the venv: {' '.join(missing)}")
+            code, out, err = run([str(py), "-m", "pip", "install", "-q", *missing], cwd=repo, timeout=1800)
+            if code == 0:
+                missing = []
+            else:
+                print((err or out)[-400:])
+        report(not missing, "Python packages for the skill scripts" + (f" (missing: {', '.join(missing)})" if missing else ""),
+               "run doctor.py --fix, or: .venv python -m pip install " + " ".join(missing))
+
+    winget = shutil.which("winget") if os.name == "nt" else None
+    for tool in ("ffmpeg", "node", "git"):
+        if not shutil.which(tool) and args.fix and winget and tool in WINGET:
+            print(f"installing {tool} with winget ({WINGET[tool]})")
+            run([winget, "install", "-e", "--id", WINGET[tool], "--accept-source-agreements", "--accept-package-agreements"],
+                timeout=1800)
+            print("  restart the terminal or agent so the new PATH is picked up")
     for tool in ("ffmpeg", "ffprobe", "git"):
-        report(bool(shutil.which(tool)), f"{tool} on PATH", f"install {tool}")
+        report(bool(shutil.which(tool)), f"{tool} on PATH", f"doctor.py --fix, or install {tool}")
     npx = shutil.which("npx")
     node = shutil.which("node")
     report(bool(npx), "npx on PATH", "install Node.js 22 or newer")
