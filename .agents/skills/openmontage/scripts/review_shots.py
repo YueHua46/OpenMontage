@@ -51,6 +51,12 @@ CATEGORIES = {
 }
 FPS = 3
 TILE_W = 480
+# Everything the agent looks at is a JPEG at most this many pixels on the long edge. Agent hosts
+# resend every viewed image as base64 on each later request; full-size PNG frames (2-3 MB each)
+# pile up until the API gateway rejects the request (HTTP 413). Vision models downscale to about
+# this size anyway, so larger files add bytes, not detail. Zoom with `regions` instead.
+VIEW_EDGE = 1280
+VIEW_QUALITY = 85
 
 
 def load(path, default=None):
@@ -177,6 +183,17 @@ def extract(video, folder, fps):
     return [(round(i / fps, 2), p) for i, p in enumerate(sorted(folder.glob("f_*.jpg")))]
 
 
+def view_copy(src, out, edge=VIEW_EDGE):
+    """A JPEG copy of an image for the agent to look at, long edge at most `edge`."""
+    from PIL import Image
+
+    im = Image.open(src).convert("RGB")
+    im.thumbnail((edge, edge))
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    im.save(out, quality=VIEW_QUALITY)
+    return str(out)
+
+
 def pages(frames, out_prefix, cols=3, rows=2, width=TILE_W):
     """Labelled contact pages large enough to read hands, screens and small parts."""
     from PIL import Image, ImageDraw
@@ -197,7 +214,7 @@ def pages(frames, out_prefix, cols=3, rows=2, width=TILE_W):
         for n, im in enumerate(tiles):
             page.paste(im, ((n % cols) * width, (n // cols) * h))
         path = Path(f"{out_prefix}_{len(made) + 1:02d}.jpg")
-        page.save(path, quality=90)
+        page.save(path, quality=VIEW_QUALITY)
         made.append(str(path))
     return made
 
@@ -220,7 +237,8 @@ def strip(frames, frac, out, height=360, per_row=6):
     sheet = Image.new("RGB", (per_row * w, rows * height), "#222")
     for n, c in enumerate(crops):
         sheet.paste(c, ((n % per_row) * w, (n // per_row) * height))
-    sheet.save(out, quality=90)
+    sheet.thumbnail((2048, 2048))  # vision models downscale past this; extra pixels only add bytes
+    sheet.save(out, quality=VIEW_QUALITY)
     return str(out)
 
 
@@ -276,7 +294,8 @@ def cmd_sheet(r, args):
         folder = r.proj / "review" / item["clip"]
         evidence = {"pages": [], "regions": {}, "frame": None}
         if stage == "frames":
-            evidence["frame"] = item["file"]
+            evidence["source"] = item["file"]
+            evidence["frame"] = view_copy(item["file"], folder / "frame.jpg")
             frames = [(0.0, Path(item["file"]))]
         else:
             frames = extract(Path(item["file"]), folder / "frames", args.fps)
@@ -292,7 +311,7 @@ def cmd_sheet(r, args):
         item["evidence"] = evidence
         print(f"\n== {item['clip']} ({s.get('purpose', '')})")
         if evidence["frame"]:
-            print("frame (full size):", evidence["frame"])
+            print("frame:", evidence["frame"], f"(review copy; the original {evidence['source']} is not for viewing)")
         for p in evidence["pages"]:
             print("page:", p)
         for name, p in evidence["regions"].items():
@@ -305,7 +324,10 @@ def cmd_sheet(r, args):
     r.save()
     print("\nReview protocol: look at every page and zoom first and write what you see without re-reading the prompt "
           "(counts, what moved, which way things face, what each screen shows, hands, text). Then compare with the checks "
-          "and record it with `mark`. Anything wrong that no check covers is still a failure: add it with --new-check.")
+          "and record it with `mark`. Anything wrong that no check covers is still a failure: add it with --new-check.\n"
+          "View only the files printed above (JPEG, long edge <= 1280). Never open the original PNG/MP4 frames with an "
+          "image viewer and never use detail \"original\": every viewed image is resent on each later request. "
+          "For a closer look add a `regions` box and rerun `sheet --only <id>`.")
 
 
 def parse_new_check(raw, sid, existing):

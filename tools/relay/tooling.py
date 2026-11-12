@@ -8,6 +8,7 @@ to the relay name, and its own price. Selectors then route by the normal
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -393,13 +394,18 @@ class RelayToolBase(BaseTool):
         return fingerprint({"tool": self.name, "model": self.relay_model.model, **payload})
 
 
+_BASE64_RE = re.compile(r"[A-Za-z0-9+/=_\-\r\n]+")  # no spaces: any prose prompt fails this
+
+
 def _summarize_media(variables: dict[str, Any]) -> dict[str, Any]:
     """Replace data URIs / base64 with short descriptions for dry-run output."""
 
     def short(value: Any) -> Any:
         if isinstance(value, str) and value.startswith("data:"):
             return f"<data-uri {value[5:value.find(';')]} {len(value)} chars>"
-        if isinstance(value, str) and len(value) > 512:
+        # Only abbreviate strings that really are base64 payloads; long prompts must stay readable
+        # so the dry run shows exactly what will be sent.
+        if isinstance(value, str) and len(value) > 512 and _BASE64_RE.fullmatch(value):
             return f"<base64 {len(value)} chars>"
         if isinstance(value, list):
             return [short(v) for v in value]

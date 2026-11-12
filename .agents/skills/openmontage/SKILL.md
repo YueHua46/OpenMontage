@@ -8,7 +8,9 @@ description: >-
 
 下文 `<SKILL>` 指本 `SKILL.md` 所在目录，`<PY>` 指仓库虚拟环境的 Python：Windows 为 `.venv/Scripts/python.exe -X utf8`，macOS/Linux 为 `.venv/bin/python -X utf8`。不要使用系统默认 Python。
 
-本技能随 OpenMontage 仓库分发，位于仓库 `.agents/skills/openmontage`，仓库根目录就是 `<SKILL>` 往上三级。所有命令在仓库目录下执行；用户素材用绝对路径引用，先确认文件存在。
+本技能随 OpenMontage 仓库分发，位于仓库 `.agents/skills/openmontage`。用户级入口 `~/.agents/skills/openmontage`（Codex）和 `~/.claude/skills/openmontage`（Claude Code）都是指向这个目录的链接，不是副本：要改技能只改仓库里的，不要在用户目录另放一份。经链接打开本文件时，不能从链接位置往上推算仓库；以 `doctor.py` 第一行 `OpenMontage repo:` 打印的路径为仓库根目录（它会解析链接，也认 `OPENMONTAGE_HOME`）。所有命令在仓库目录下执行；用户素材用绝对路径引用，先确认文件存在。
+
+本技能的脚本（`batch_generate.py`、`review_shots.py`、`qc_media.py`、`preview.py`、`playbook.py` 等）都在 `.agents/skills/openmontage/scripts/`。仓库根目录的 `scripts/` 是另一组无关脚本，在那里找不到它们不代表脚本不存在。
 
 ## 开工前
 
@@ -37,8 +39,8 @@ description: >-
 
 走 `cinematic` 流水线（Rule Zero），用 `lib.checkpoint` 写检查点，遵守审批闸门。
 
-1. **看素材：** 读完用户给的全部脚本、图片和参考视频（抽帧、测时长和切点）。只有模糊要求时按 `skills/meta/creative-intake.md` 的 “Handling Open, Media-Led Briefs” 自己推断，最多问一个阻塞问题。
-2. **提案：** 一次列清镜头表、费用、分辨率、配音方案和需要用户决定的默认项。用户已给完整脚本或分镜时，脚本和分镜随提案一起批准，不再逐阶段确认。
+1. **看素材：** 读完用户给的全部脚本、图片和参考视频（抽帧、测时长和切点）。图片和视频帧先用 `scripts/preview.py` 转成小图再看（见下文“看图”）。只有模糊要求时按 `skills/meta/creative-intake.md` 的 “Handling Open, Media-Led Briefs” 自己推断，最多问一个阻塞问题。
+2. **提案：** 一次列清镜头表、费用、分辨率、配音方案和需要用户决定的默认项。用户已给完整脚本或分镜时，脚本和分镜随提案一起批准，不再逐阶段确认。带货、转化广告默认按 `references/batch.md` 1.0 的“钩子 → 痛点 → 方案 → 证明 → 下单引导”结构写，用户另有结构时按用户的。
 3. **样片：** 第一次付费前展示 `dry_run`。没有方法卡、又有人物对白或新的语言时，先生成 2–3 段样片交用户试听，通过后再批量。按已就绪的方法卡批量时不单做样片，所有条目同步推进（`references/batch.md` 3.1）。
 4. **批量生成：** 把镜头写成 spec，用 `scripts/batch_generate.py`：先生成首帧并逐张检查，再生成视频（`--dry-run` 可预览）。它已处理费用记录、并发提交和跳过已有文件；多条片子用 `--project v1 v2 v3` 一次并发跑完。
 5. **检查：** 用 `scripts/qc_media.py <目录> --sheets <目录>` 测尺寸、解码、切镜和有声区间，再看抽帧表。偏差如实报告，由用户决定。
@@ -48,7 +50,27 @@ description: >-
 
 第 2、3、6 步必须停下等用户确认，不要一口气跑完：用户不满意时，后面的费用就白花了。首帧有明显问题时也先报告，再生成对应视频。
 
-第 4、5 步按 `references/batch.md` 第 1 节走验收闭环，审查员是你自己：生成前按 10 个类别推出每个镜头的验收规则（不只是用户举的例子），首帧先审再出视频；用 `scripts/review_shots.py` 出放大的抽帧页，先写客观观察再逐条对照，清单外的问题同样判不通过并补成新规则；不通过的镜头改输入后有限次重生成，旧版保留。
+第 4、5 步按 `references/batch.md` 第 1 节走验收闭环，审查员是你自己：生成前按 10 个类别推出每个镜头的验收规则（不只是用户举的例子），首帧先审再出视频；用 `scripts/review_shots.py` 出放大的抽帧页，先写客观观察再逐条对照，清单外的问题同样判不通过并补成新规则；不通过的镜头改输入后有限次重生成，旧版保留。首帧画的是镜头动作开始前一刻的状态，不是动作的结果（`references/batch.md` 1.1）。
+
+**付费生成只走 `batch_generate.py`，重生成只走 `review_shots.py retake` + `batch_generate.py --only`。** 不要用 `registry.get(...).execute()`、`python -c` 或自写脚本直接调生成工具：那样不进 `cost_log.json`，绕开预算、重生成次数和首帧闸门，版本命名也和 `review.json` 对不上。直接调工具只用于 `dry_run` 查看请求。预算或次数不够时，先问用户，再改 spec 的 `budget_usd` / `max_retakes`。用户授权“有问题自己重做”，同样走这条路径。多个镜头要重做时一起 `retake`，再用一次 `--only a b c` 并发提交，不要一张一张串行跑。
+
+## 看图
+
+Codex、Claude Code 会把你看过的每张图以 base64 留在对话历史里，之后每次请求都整段重发。原始 PNG 一张 2–3 MB，几十张就会让请求体超过中转网关上限，报 `413 Payload Too Large` / `Request Entity Too Large`，对话直接中断，这时 token 往往才用了两成。模型看图时本来就会缩到约 1280–2048 像素，大文件只增加字节，不增加细节。
+
+- 只看脚本产出的 JPEG：首帧和视频用 `review_shots.py sheet` 打印的 `frame`、`page`、`zoom` 文件；其他图片（用户素材、产品参考图、临时看一眼的视频帧）先运行 `<PY> <SKILL>/scripts/preview.py <文件或目录> [--times 0.5 2]`，再看它打印的路径。
+- 不直接打开 `assets/images/*.png`、`assets/video/*.mp4` 或自己用 ffmpeg 抽出的 PNG；不用 `detail: "original"`。
+- 看不清细节就在 spec 的 `regions` 里加放大区域，重新 `sheet --only <镜头>`，不要换成看原图。
+- 同一张图不重复看；一次调用里看的图控制在 6 张以内。
+- 已经出现 413 时，这个对话之后的每次请求都会带着同样的历史，基本都会被拒（`/compact` 多半也要上传整段历史）。告诉用户新开一个对话，从项目检查点和 `review_shots.py status` 接着做。
+
+## 对话压缩或交接之后
+
+长任务中途对话被压缩，或者换到新对话时，先恢复状态，不要凭摘要重新摸索：
+
+1. 写交接摘要时必须包括：项目 id、spec 路径、本技能脚本目录 `.agents/skills/openmontage/scripts/`、各镜头当前 take 和审核结论、已用费用和剩余预算、用户的最新授权范围和创意修正。
+2. 接手后重新读本文件，然后运行 `review_shots.py status --project <id> --spec projects/<id>/shots.json`，并读 `projects/<id>/cost_log.json`，按里面的状态接着走第 1 节的闭环。
+3. 摘要里说的“已通过”“已花费”要以这两个文件为准；对不上时告诉用户。
 
 一条片子验收通过后，用户想复用这套做法，或者要求批量出类似的片子时，按 `references/batch.md` 用 `scripts/playbook.py` 把项目沉淀成方法卡，再按方法卡写新需求的分镜（用户提到“上次那条”时先 `playbook.py list` 找已有的方法卡），每个审核点都要停下。只换场景、人物或台词的简单裂变，可以用同一文件里的变量模板。
 
@@ -59,7 +81,7 @@ description: >-
 - 汇报费用时区分配置估算与可核实的实际扣费，超过批准预算前必须先问。
 - 密钥只放在仓库 `.env` 或环境变量，不写入技能、YAML、示例、日志或交付物。
 - Agent 听不到音频：发音、声音一致性、口型和配乐听感都由用户确认，不能声称已听过。
-- 演示产品功能的 AI 画面不是实拍，提案中提醒用户是否加 “simulated” 类标注，并提醒平台的 AI 内容披露要求。脚本里的产品参数来自用户，没有核实时要说明。
+- 演示产品功能的 AI 画面不是实拍，提案中提醒用户是否加 “simulated” 类标注，并提醒平台的 AI 内容披露要求。脚本里的产品参数和卖点（如“免订阅”“即时接通”“2K”）来自用户，没有核实时在提案里逐条列出风险，由用户决定保留、改写或删除；不要擅自删改用户脚本里的台词和卖点。
 
 ## 生成偏差的处理边界
 
