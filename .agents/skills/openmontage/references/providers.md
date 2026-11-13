@@ -2,10 +2,12 @@
 
 ## 渠道选择与切换
 
+**相同首尾帧不是外观锁定器。** 它要求回到开场构图，可能造成推近后倒退、动作回放或变形返回。默认只用首帧；原稿确需循环或同构图终点时才用相同尾帧，在镜头 same_end_frame_reason 说明依据，仍须验中间完整过程。
+
 各渠道并存，图片和视频分别选择；持久化默认值以仓库 `relay_providers.yaml` 的 `routing.default_tools` 为准，不以本文件的历史示例代替当前配置。当前约定：
 
 - 图片：tokenshop / tststs，默认 `relay_tststs_gpt_image_2_6`（gpt-image-2.6，¥0.006–0.01/张）；`gpt-image-2`、`gpt-image-2.5` 仍保留，点名可用。
-- 视频：tokenshop Grok Imagine Video 1.5，默认 `relay_tststs_grok_video_1_5`（运营反馈效果更好），密钥变量 `TSTSTS_MEDIA_API_KEY`。支持首帧图生视频和首尾帧（`reference_image_path` + `last_frame_path`；批量分镜里写 `"video_inputs": {"last_frame_path": "same"}` 表示首帧兼作尾帧，用来锁住产品外观）。首尾帧格式与 2026-11-09 P52 实跑一致。OmniaKey MiniMax H3（`relay_omniakey_minimax_h3`，端点 `https://api.omniakey.com/v1/media/tasks`，密钥变量 `OMNIAKEY_API_KEY`）保留为可切换的渠道，用户指定或按分镜 `video_tool` 时使用。
+- 视频：tokenshop Grok Imagine Video 1.5，默认 `relay_tststs_grok_video_1_5`（运营反馈效果更好），密钥变量 `TSTSTS_MEDIA_API_KEY`。支持首帧图生视频和首尾帧（`reference_image_path` + `last_frame_path`）。首尾帧格式与 2026-11-09 P52 实跑一致。OmniaKey MiniMax H3（`relay_omniakey_minimax_h3`，端点 `https://api.omniakey.com/v1/media/tasks`，密钥变量 `OMNIAKEY_API_KEY`）保留为可切换的渠道，用户指定或按分镜 `video_tool` 时使用。
 - 配音：Fish Audio 直连（非中转站），工具 `fish_audio_tts`，密钥变量 `FISH_AUDIO_API_KEY`，详见下方「配音（Fish Audio）」。
 - 密钥只放在仓库 `.env` 或环境变量中；不写入技能、YAML、示例、日志或交付物。
 

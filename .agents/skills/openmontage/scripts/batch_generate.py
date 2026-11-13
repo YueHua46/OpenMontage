@@ -15,9 +15,11 @@ Spec (paths relative to the project folder unless absolute):
 {"budget_usd": 4.0, "resolution": "720p", "aspect_ratio": "9:16", "video_tool": "...", "image_tool": "...",
  "video_inputs": {"extra_params": {...}},
  "shots": [{"id": "a1", "refs": ["assets/images/source/x.png"], "frame_prompt": "...", "duration": 6,
-            "video_prompt": "...", "take": 1, "frame_take": 1, "video_inputs": {"last_frame_path": "same"}}]}
+            "video_prompt": "...", "take": 1, "frame_take": 1}]}
 
 - A shot with no refs uses text-to-image.
+- A shot can set "aspect_ratio" (e.g. a 16:9 surveillance feed shown inside a 9:16 app screen) for its
+  frame and video.
 - A shot can set "video_tool" and "resolution" to move just that shot to another approved provider
   (its limits differ, e.g. MiniMax H3 is 768P and 4-15 s). Generate it in its own --only run.
 - "kind": "reference" marks a still other shots build on (character sheet, room plate); it needs no
@@ -25,6 +27,8 @@ Spec (paths relative to the project folder unless absolute):
   means its current frame take.
 - take N > 1 writes assets/video/<id>-takeN.mp4 (frame_take likewise for frames), so earlier takes are kept.
   review_shots.py retake bumps these numbers; do not overwrite an earlier take.
+- frame_alias is an explicit local shared first-frame path for scripts requiring identical stills;
+  frames generation skips the alias, but each shot still needs its own frame review before video.
 - video_inputs (spec level, then shot level) is merged into the video tool inputs, e.g. extra_params,
   last_frame_path ("same" = the shot's first frame, "@<id>" = a reference shot's current frame, e.g. an
   end pose), reference_image_paths, operation.
@@ -65,6 +69,9 @@ def take_name(sid, take):
 
 
 def frame_file(proj, shot):
+    if shot.get("frame_alias"):
+        value = Path(shot["frame_alias"])
+        return value if value.is_absolute() else proj / value
     return proj / "assets/images" / f"{take_name(shot['id'], shot.get('frame_take'))}.png"
 
 
@@ -121,6 +128,11 @@ def video_extra(proj, spec, shot, frame):
             merged[key] = str(frame) if value == "same" else resolve(proj, value, spec)
         elif key.endswith("_paths") and isinstance(value, list):
             merged[key] = [str(frame) if v == "same" else resolve(proj, v, spec) for v in value]
+    tail = merged.get("last_frame_path")
+    if tail and Path(tail).resolve() == Path(frame).resolve() and not shot.get("same_end_frame_reason", "").strip():
+        sys.exit(f"{shot['id']}: identical first/last frame can cause return motion. "
+                 "Remove last_frame_path unless the intended action really returns to this composition; "
+                 "record that source-based reason in same_end_frame_reason. It is not an appearance lock.")
     return merged
 
 
@@ -133,6 +145,10 @@ def plan_project(args, project, spec_path):
     if not spec_path.exists():
         sys.exit(f"{project}: spec not found: {spec_path}")
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    hold = spec.get("production_hold") or {}
+    if hold.get("active") and args.stage not in hold.get("allowed_stages", []) and not args.dry_run:
+        sys.exit(f"{project}: generation held for quality review: {hold.get('reason', 'unresolved review failure')}. "
+                 "Resolve the recorded cause before clearing production_hold; dry-run remains available.")
     image_tool_name = args.image_tool or spec.get("image_tool") or default_tool("image", FALLBACK_IMAGE_TOOL)
     aspect = spec.get("aspect_ratio", "9:16")
     resolution = spec.get("resolution")
@@ -153,7 +169,8 @@ def plan_project(args, project, spec_path):
     tool = get_tool(tool_name)
     if args.stage == "videos":
         for s in shots:
-            check_limits(tool, s.get("resolution", resolution), s.get("video_inputs", {}).get("aspect_ratio", aspect))
+            check_limits(tool, s.get("resolution", resolution),
+                         s.get("video_inputs", {}).get("aspect_ratio", s.get("aspect_ratio", aspect)))
 
     # First-frame gate: when the spec has acceptance checks, a video is only made from a frame that
     # review_shots.py marked pass. Frames are cheap; most defects (phone reversed, extra device) start there.
@@ -164,6 +181,9 @@ def plan_project(args, project, spec_path):
     jobs = {}
     for s in shots:
         sid = s["id"]
+        if args.stage == "frames" and s.get("frame_alias"):
+            print(f"{project}/{sid}: shared first frame {frame_file(proj, s)}; generate and review its owner first.")
+            continue
         need = "frame_prompt" if args.stage == "frames" else "video_prompt"
         if not s.get(need):
             sys.exit(f"{project}/{sid}: no {need} in the spec")
@@ -175,7 +195,8 @@ def plan_project(args, project, spec_path):
             if missing:
                 sys.exit(f"{project}/{sid}: missing refs {missing}. Generate and review reference shots first "
                          f"(--only <their ids>), then the shots that use them.")
-            inputs = {"preferred_tool": tool_name, "generation_mode": "edit" if refs else "generate", "aspect_ratio": aspect,
+            inputs = {"preferred_tool": tool_name, "generation_mode": "edit" if refs else "generate",
+                      "aspect_ratio": s.get("aspect_ratio", aspect),
                       "output_path": str(out), "scene_id": sid, "prompt": s["frame_prompt"]}
             if refs:
                 inputs["image_paths"] = refs
@@ -188,8 +209,19 @@ def plan_project(args, project, spec_path):
                 if verdict != "pass":
                     print(f"{project}/{sid}: first frame {frame.name} is {verdict or 'not reviewed'}; review it (review_shots.py sheet/mark --stage frames) first. Skipped.")
                     continue
+                extra = {**spec.get("video_inputs", {}), **s.get("video_inputs", {})}
+                referenced = [v[1:] for v in extra.values() if isinstance(v, str) and v.startswith("@")]
+                unreviewed = []
+                for ref_id in referenced:
+                    ref_shot = next((x for x in spec["shots"] if x["id"] == ref_id), None)
+                    if not ref_shot or review.get(ref_id, {}).get("frames", {}).get(str(ref_shot.get("frame_take", 1)), {}).get("verdict") != "pass":
+                        unreviewed.append(ref_id)
+                if unreviewed:
+                    print(f"{project}/{sid}: video input references {unreviewed} have not passed frame review. Skipped.")
+                    continue
             inputs = {"preferred_tool": tool_name, "operation": "image_to_video", "reference_image_path": str(frame), "duration": s["duration"],
-                      "aspect_ratio": aspect, "output_path": str(out), "scene_id": sid, "prompt": s["video_prompt"]}
+                      "aspect_ratio": s.get("aspect_ratio", aspect), "output_path": str(out), "scene_id": sid,
+                      "prompt": s["video_prompt"]}
             if s.get("resolution", resolution):
                 inputs["resolution"] = s.get("resolution", resolution)
             inputs.update(video_extra(proj, spec, s, frame))
@@ -260,7 +292,7 @@ def main():
     # Reserve every project's budget before submitting anything. budget_usd is the budget the user
     # approved, so it is a hard cap: if any project would exceed it, nothing is submitted.
     # The per-shot price was approved with the batch quote, so only the project budget caps it here.
-    entries, current = {}, None
+    entries, current, new_reservations = {}, None, set()
     try:
         for plan in plans:
             current = plan["project"]
@@ -271,14 +303,21 @@ def main():
             tracker.approve_tool(plan["tool_name"])
             plan["tracker"] = tracker
             for key, (_, cost) in plan["jobs"].items():
+                existing = next((e for e in reversed(tracker.entries)
+                                 if e["tool"] == plan["tool_name"] and e["operation"] == key
+                                 and e["status"] == "reserved"), None) if not args.resubmit else None
+                if existing:
+                    entries[(plan["project"], key)] = existing["id"]
+                    continue  # resume the same commitment; do not reserve it twice
                 entry = tracker.estimate(plan["tool_name"], key, cost)
                 entries[(plan["project"], key)] = entry
                 tracker.reserve(entry)
+                new_reservations.add((plan["project"], key))
     except (BudgetExceededError, ApprovalRequiredError) as exc:
         for plan in plans:
             for key in plan["jobs"]:
                 entry = entries.get((plan["project"], key))
-                if entry and "tracker" in plan:
+                if entry and "tracker" in plan and (plan["project"], key) in new_reservations:
                     try:
                         plan["tracker"].refund(entry)
                     except Exception:
@@ -301,9 +340,9 @@ def main():
             if gate:
                 gate.acquire()
             r = selector.execute(inputs)
-            return plan, key, r.success, r.error, r.cost_usd, (r.data or {}).get("status")
+            return plan, key, r.success, r.error, r.cost_usd, (r.data or {})
         except Exception as exc:
-            return plan, key, False, repr(exc)[:300], 0, None
+            return plan, key, False, repr(exc)[:300], 0, {}
         finally:
             if gate:
                 gate.release()
@@ -312,20 +351,34 @@ def main():
         rows = list(pool.map(run, work))
 
     failed = 0
-    for plan, key, ok, err, cost, status in rows:
+    for plan, key, ok, err, cost, data in rows:
         entry = entries[(plan["project"], key)]
+        status = data.get("status")
+        output = Path(plan["jobs"][key][0]["output_path"])
+        job_path = Path(str(output) + ".relay-job.json")
+        job = json.loads(job_path.read_text(encoding="utf-8")) if job_path.exists() else {}
+        outstanding = status == "pending" or job.get("state") in {"submitting", "submitted", "submit_unknown", "succeeded"}
+        outstanding = outstanding or (job.get("state") == "failed" and job.get("billed") == "unknown")
         if ok:
             plan["tracker"].reconcile(entry, cost or plan["jobs"][key][1], True)
+        elif outstanding:
+            failed += 1  # keep the reservation until the task's billing is known
+            status = "pending / budget reserved"
+            err = job.get("last_poll_error") or err
         else:
             plan["tracker"].refund(entry)
             failed += 1
-        print(f"{plan['project']}/{key}", "ok" if ok else "FAILED", status or "", str(err or "")[:200])
+        print(f"{plan['project']}/{key}", "ok" if ok else ("PENDING" if outstanding else "FAILED"), status or "", str(err or "")[:200])
     for plan in plans:
-        if args.stage == "frames" and plan["aspect"] == "9:16":
-            for key in plan["jobs"]:
+        if args.stage == "frames":
+            for key, (inputs, _cost) in plan["jobs"].items():
+                want = str(inputs.get("aspect_ratio") or plan["aspect"])
+                if ":" not in want:
+                    continue
+                aw, ah = (float(x) for x in want.split(":"))
                 w, h = size_of(plan["proj"] / "assets/images" / f"{key}.png")
-                if h and abs(w / h - 9 / 16) > 0.01:
-                    print(f"{plan['project']}/{key}: returned {w}x{h}, not 9:16. Keep the original and ask before cropping.")
+                if h and abs(w / h - aw / ah) > 0.01:
+                    print(f"{plan['project']}/{key}: returned {w}x{h}, not {want}. Keep the original and ask before cropping.")
         print(plan["project"], plan["tracker"].cost_snapshot())
     sys.exit(1 if failed else 0)
 

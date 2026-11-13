@@ -18,7 +18,7 @@ Edit file, with times in seconds of the source clip:
 }
 An "insert" is a screen drawn by the overlay, with no clip behind it; the clip's audio keeps playing under it.
 A segment with "fit": "contain" is scaled whole into the frame on black (e.g. a square CCTV shot in 9:16)
-instead of the default cover-and-crop. "mute": true drops a segment's own sound; "clip_audio": false mutes all.
+instead of the default cover-and-crop. "mute": true drops a segment's own sound (clips with no audio stream are muted automatically); "clip_audio": false mutes all.
 Narration files: "voiceover": [{"file": "assets/audio/vo1.mp3", "at": "<label>", "offset": 0.05, "tempo": 1.0}]
 (paths relative to the project; tempo changes speech speed only, without pitch change).
 Overlay files may use {{total}}, {{<id>.start}}, {{<id>.duration}}, {{<id>.end}} and {{<id>.start+0.5}}.
@@ -39,11 +39,18 @@ SPEAKER = "highpass=f=320,lowpass=f=3400,acompressor=threshold=-20dB:ratio=4,aec
 
 
 def q(x):
-    return round(round(x * FPS) / FPS, 4)
+    return round(x * FPS) / FPS
 
 
 def ff(*args):
     subprocess.run(["ffmpeg", "-v", "error", "-y", *map(str, args)], check=True)
+
+
+def has_audio(path):
+    """Clips rendered locally (app screens, stills) may have no audio stream; treat them as muted."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
+                          "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout
+    return bool(out.strip())
 
 
 def lufs(path, start, end):
@@ -79,7 +86,7 @@ def main():
             name = f"p{n:02d}_{seg['clip']}.mp4"
             pictures.append({"name": name, "clip": seg["clip"], "in": seg["in"], "duration": d, "start": t,
                              "fit": seg.get("fit", "cover")})
-            if edit.get("clip_audio", True) and not seg.get("mute"):
+            if edit.get("clip_audio", True) and not seg.get("mute") and has_audio(source / f"{seg['clip']}.mp4"):
                 sounds.append({"clip": seg["clip"], "in": seg.get("audio_in", seg["in"]), "out": seg.get("audio_out", seg["out"]), "at": t, "role": seg.get("role", "voice")})
             marks.setdefault(seg.get("label", seg["clip"]), {"start": t, "duration": d})
             t = q(t + d)

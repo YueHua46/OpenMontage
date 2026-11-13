@@ -58,7 +58,7 @@ CATEGORIES = {
     "realism": "the look matches the chosen style template (references/styles/), e.g. phone footage of a real home for "
                "UGC ads; no unintended AI look: plastic skin, posed bodies, showroom-perfect rooms, render-like products",
 }
-FPS = 3
+FPS = 6
 TILE_W = 480
 # Everything the agent looks at is a JPEG at most this many pixels on the long edge. Agent hosts
 # resend every viewed image as base64 on each later request; full-size PNG frames (2-3 MB each)
@@ -146,6 +146,11 @@ class Review:
             frame = frame_file(self.proj, s)
             if frame.exists():
                 f = rec["frames"].setdefault(str(s.get("frame_take", 1)), {"verdict": "pending", "notes": "", "failed_checks": []})
+                if f.get("file") and Path(f["file"]).resolve() != frame.resolve():
+                    rec.setdefault("frame_source_changes", []).append({"frame_take": s.get("frame_take", 1),
+                        "previous": dict(f), "new_file": str(frame), "at": now()})
+                    f.clear()
+                    f.update({"verdict": "pending", "notes": "Frame source changed; review the new input.", "failed_checks": []})
                 f.update({"clip": frame.stem, "file": str(frame)})
 
     def latest(self, sid, stage="videos"):
@@ -237,6 +242,29 @@ def region_spec(value):
     return value, None, None
 
 
+def region_pages(frames, frac, folder, width=360):
+    """Paginate a crop instead of shrinking a whole sequence into one unreadable strip."""
+    from PIL import Image
+
+    folder.mkdir(parents=True, exist_ok=True)
+    cropped = []
+    for i, (t, path) in enumerate(frames):
+        with Image.open(path) as im:
+            crop = im.convert("RGB").crop(box(frac, im.width, im.height))
+        crop.thumbnail((width, 560))
+        target = folder / f"crop_{i:04d}.jpg"
+        crop.save(target, quality=VIEW_QUALITY)
+        cropped.append((t, target))
+    # Keep actual viewed pages within the documented 1280px limit.
+    if not cropped:
+        return []
+    with Image.open(cropped[0][1]) as im:
+        tile_width = min(width, im.width)
+        tile_height = im.height
+    return pages(cropped, folder / "page", cols=3,
+                 rows=max(1, min(2, 1280 // max(1, tile_height))), width=tile_width)
+
+
 def strip(frames, frac, out, height=360, per_row=6, ref=None):
     """One region cropped from every sampled frame and enlarged, so small details are readable.
     `ref` = (image path, box): that crop comes first, labelled REF, for identity and layout checks."""
@@ -324,16 +352,22 @@ def cmd_sheet(r, args):
             continue
         if item["verdict"] != "pending" and not args.only:
             continue
-        folder = r.proj / "review" / item["clip"]
+        evidence_id = f"{sid}-shared-frame{s.get('frame_take', 1)}" if stage == "frames" and s.get("frame_alias") else item["clip"]
+        folder = r.proj / "review" / evidence_id
         evidence = {"pages": [], "regions": {}, "frame": None}
+        previous_evidence = item.get("evidence") or {}
+        if previous_evidence.get("asr") is not None:
+            evidence["asr"] = previous_evidence["asr"]
         if stage == "frames":
             evidence["source"] = item["file"]
             evidence["frame"] = view_copy(item["file"], folder / "frame.jpg")
             frames = [(0.0, Path(item["file"]))]
         else:
             frames = extract(Path(item["file"]), folder / "frames", args.fps)
-            evidence["pages"] = pages(frames, folder / "page")
+            evidence["pages"] = pages(frames, folder / "page", cols=args.cols, rows=args.rows, width=args.tile_width)
             evidence["duration"] = frames[-1][0] if frames else 0
+            evidence["sampling_fps"] = args.fps
+            evidence["source_video"] = item["file"]
         folder.mkdir(parents=True, exist_ok=True)
         for name, value in s.get("regions", {}).items():
             frac, ref, ref_box = region_spec(value)
@@ -342,6 +376,9 @@ def cmd_sheet(r, args):
                 ref_img = None  # the reference shot itself
             evidence["regions"][name] = strip(frames, frac, folder / f"region_{name}.jpg",
                                               ref=(ref_img, ref_box) if ref_img else None)
+            if stage == "videos" and args.region_pages and name in args.region_pages:
+                evidence.setdefault("region_pages", {})[name] = region_pages(
+                    frames, frac, folder / f"pages_{name}")
         if stage == "videos" and s.get("dialogue") and args.lang:
             heard = transcribe(item["file"], args.lang)
             evidence["asr"] = None if heard is None else {
@@ -354,6 +391,9 @@ def cmd_sheet(r, args):
             print("page:", p)
         for name, p in evidence["regions"].items():
             print(f"zoom {name}:", p)
+        for name, paths in evidence.get("region_pages", {}).items():
+            for p in paths:
+                print(f"zoom page {name}:", p)
         if "asr" in evidence:
             print("dialogue:", "faster-whisper not installed, check by ear" if evidence["asr"] is None else evidence["asr"])
         print("checks (read only after writing what you observed):")
@@ -447,10 +487,11 @@ def cmd_retake(r, args):
     elif take["verdict"] != "fail":
         sys.exit(f"{take['clip']} is {take['verdict']}; mark it fail with the defect before a retake")
     used = len(rec.get("retakes", []))  # one retake = one decision to regenerate (frame, video or both)
-    if used >= r.max_retakes:
+    limit = int(shot.get("max_retakes", r.max_retakes))
+    if used >= limit:
         rec["status"] = "awaiting_human_review"
         r.save()
-        sys.exit(f"{args.shot}: {used} retakes used (max {r.max_retakes}). Report it as failed / awaiting human review "
+        sys.exit(f"{args.shot}: {used} retakes used (max {limit}). Report it as failed / awaiting human review "
                  f"with the defects and tried prompts; more retakes need the user's approval (raise max_retakes in the spec).")
     if not args.reason:
         sys.exit("--reason is required: name the defect and what the new input changes")
@@ -472,8 +513,8 @@ def cmd_retake(r, args):
         name = take_name(args.shot, shot.get("frame_take", 1))
     else:
         nxt, name = "--stage videos", take_name(args.shot, shot.get("take", 1))
-    print(f"{args.shot}: next is {name} ({used + 1}/{r.max_retakes} retakes). "
-          f"Run batch_generate.py {nxt} --only {args.shot}; earlier takes stay on disk.")
+    print(f"{args.shot}: next is {name} ({used + 1}/{limit} retakes). "
+          f"Run batch_generate.py {nxt} --only {args.shot}; earlier takes stay on disk. Approved limit: {limit}.")
 
 
 def cmd_accept(r, args):
@@ -513,7 +554,7 @@ def cmd_status(r, args):
         used = len(rec.get("retakes", []))  # one retake = one decision to regenerate (frame, video or both)
         rows.append({"shot": sid, "purpose": s.get("purpose", ""), "frame": frame["verdict"] if frame else "none",
                      "takes": len(rec["takes"]), "latest": n, "verdict": latest["verdict"] if latest else "no take",
-                     "retakes_left": max(0, r.max_retakes - used), "selected": rec.get("selected"), "status": rec.get("status"),
+                     "retakes_left": max(0, int(s.get("max_retakes", r.max_retakes)) - used), "selected": rec.get("selected"), "status": rec.get("status"),
                      "user_accepted": next((t["user_accepted"] for t in rec["takes"].values()
                                             if t.get("clip") == rec.get("selected") and t.get("user_accepted")), None)})
         (clips if rec.get("selected") else unresolved).append(rec.get("selected") or sid)
@@ -536,7 +577,11 @@ def main():
         if name == "sheet":
             p.add_argument("--only", nargs="*")
             p.add_argument("--lang", help="dialogue language for the ASR check, e.g. es, en, zh")
-            p.add_argument("--fps", type=float, default=FPS, help="sampled frames per second (default 3)")
+            p.add_argument("--fps", type=float, default=FPS, help=f"sampled frames per second (default {FPS}); inspect rapid transitions more densely")
+            p.add_argument("--cols", type=int, default=3, help="contact-sheet columns; use small tiles only with region zooms")
+            p.add_argument("--rows", type=int, default=2, help="contact-sheet rows")
+            p.add_argument("--tile-width", type=int, default=TILE_W, help="contact-sheet tile width in pixels")
+            p.add_argument("--region-pages", nargs="*", help="region names to paginate at readable size, instead of relying on a shrunken strip")
         if name in ("sheet", "mark", "accept"):
             p.add_argument("--take", type=int, help="a specific take instead of the latest")
         if name in ("mark", "retake", "accept"):
