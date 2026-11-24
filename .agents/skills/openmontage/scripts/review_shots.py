@@ -52,7 +52,7 @@ CATEGORIES = {
     "text_ui": "on-screen text, app UI and packaging stay as in the reference; no garbled text or watermarks",
     "people": "same identity and clothes; hands, fingers, limbs and faces are natural",
     "action": "the scripted action happens, in order, within the shot",
-    "audio": "dialogue, language and sound; the agent cannot hear, so ASR plus the user",
+    "audio": "dialogue, language and audio track; run ASR and acoustic checks first, and record what still awaits human listening",
     "continuity": "same person (face, age, hair, clothes), same room and the same furniture and prop positions as the "
                   "reference shots and neighbouring shots; distances the story relies on still hold",
     "realism": "the look matches the chosen style template (references/styles/), e.g. phone footage of a real home for "
